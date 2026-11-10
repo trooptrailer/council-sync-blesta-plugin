@@ -1,0 +1,12 @@
+{
+    "version": "1.0.0",
+    "name": "CouncilSyncPlugin.name",
+    "description": "CouncilSyncPlugin.description",
+    "icon": "bi bi-arrow-repeat",
+    "authors": [
+        {
+            "name": "TroopTrailer",
+            "url": "https://trooptrailer.com"
+        }
+    ]
+}

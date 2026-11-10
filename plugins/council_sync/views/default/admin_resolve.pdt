@@ -1,0 +1,98 @@
+<div class="card">
+    <div class="card-header"><h2><?php $this->_('AdminMain.resolve'); ?></h2></div>
+    <div class="card-body">
+        <p class="alert alert-info"><?php $this->_('AdminMain.resolve_help'); ?></p>
+        <nav class="d-flex gap-2 mb-3">
+            <a class="btn btn-outline-secondary" href="<?php echo $this->Html->safe($sync_uri . 'index/'); ?>"><?php $this->_('AdminMain.settings'); ?></a>
+            <a class="btn btn-outline-secondary" href="<?php echo $this->Html->safe($sync_uri . 'history/'); ?>"><?php $this->_('AdminMain.history'); ?></a>
+        </nav>
+        <?php if (!$preview['conflicts']) { ?>
+            <p><?php $this->_('AdminMain.no_conflicts'); ?></p>
+        <?php } ?>
+        <?php $this->Form->create($sync_uri . 'resolve/'); ?>
+        <?php $this->Form->fieldHidden('nonce', $nonce); ?>
+        <?php $index = 0; foreach ($preview['conflicts'] as $old => $conflict) { ?>
+            <?php
+            $choice = is_array($posted_choices[$index] ?? null) ? $posted_choices[$index] : [];
+            $mode = is_string($choice['mode'] ?? null) ? $choice['mode'] : '';
+            $overrides = is_array($choice['clients'] ?? null) ? $choice['clients'] : [];
+            $new_options = ['' => $this->_('AdminMain.choose', true)] + $preview['after'];
+            ?>
+            <fieldset class="border rounded p-3 mb-4">
+                <legend><?php echo $this->Html->safe($conflict['label']); ?></legend>
+                <p><?php $this->_('AdminMain.old_value'); ?>: <code><?php echo $this->Html->safe($old); ?></code></p>
+                <p><?php $this->_('AdminMain.affected'); ?>: <?php echo $this->Html->safe($conflict['count']); ?></p>
+                <div class="mb-3">
+                    <label class="form-check">
+                        <?php $this->Form->fieldRadio("choices[$index][mode]", 'accept', $mode === 'accept', ['class' => 'form-check-input', 'required' => 'required']); ?>
+                        <span><?php $this->_('AdminMain.accept'); ?></span>
+                    </label>
+                    <label class="form-check text-danger ms-3">
+                        <?php $this->Form->fieldCheckbox("choices[$index][confirm_orphan]", '1', ($choice['confirm_orphan'] ?? null) === '1', ['class' => 'form-check-input']); ?>
+                        <span><?php $this->_('AdminMain.orphan_warning'); ?></span>
+                    </label>
+                </div>
+                <div class="mb-3">
+                    <label class="form-check">
+                        <?php $this->Form->fieldRadio("choices[$index][mode]", 'remap', $mode === 'remap', ['class' => 'form-check-input', 'required' => 'required']); ?>
+                        <span><?php $this->_('AdminMain.remap'); ?></span>
+                    </label>
+                    <?php $this->Form->fieldSelect("choices[$index][target]", $new_options, is_string($choice['target'] ?? null) ? $choice['target'] : '', ['class' => 'form-select']); ?>
+                </div>
+                <div class="mb-3">
+                    <label class="form-check">
+                        <?php $this->Form->fieldRadio("choices[$index][mode]", 'clients', $mode === 'clients', ['class' => 'form-check-input', 'required' => 'required']); ?>
+                        <span><?php $this->_('AdminMain.per_client'); ?></span>
+                    </label>
+                    <label class="form-label"><?php $this->_('AdminMain.remap_all'); ?></label>
+                    <?php $this->Form->fieldSelect("choices[$index][all_target]", $new_options, is_string($choice['all_target'] ?? null) ? $choice['all_target'] : '', ['class' => 'form-select']); ?>
+                    <details class="mt-3">
+                        <summary><?php $this->_('AdminMain.clients'); ?></summary>
+                        <div class="table-responsive">
+                            <table class="table">
+                                <thead><tr><th><?php $this->_('AdminMain.client'); ?></th><th><?php $this->_('AdminMain.current'); ?></th><th><?php $this->_('AdminMain.new'); ?></th></tr></thead>
+                                <tbody>
+                                <?php foreach ($conflict['clients'] as $client) { ?>
+                                    <tr>
+                                        <td>
+                                            <a href="<?php echo $this->Html->safe($this->base_uri . 'clients/view/' . $client['id'] . '/'); ?>"><?php echo $this->Html->safe($client_names[$client['id']]); ?></a>
+                                            (#<?php echo $this->Html->safe($client['id']); ?>)
+                                        </td>
+                                        <td><code><?php echo $this->Html->safe($client['value']); ?></code></td>
+                                        <td>
+                                            <?php
+                                            $target = $overrides[$client['id']] ?? '';
+                                            $this->Form->fieldSelect(
+                                                "choices[$index][clients][" . $client['id'] . ']',
+                                                ['' => $this->_('AdminMain.use_all', true)] + $preview['after'],
+                                                is_string($target) ? $target : '', ['class' => 'form-select']
+                                            );
+                                            ?>
+                                        </td>
+                                    </tr>
+                                <?php } ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    </details>
+                </div>
+            </fieldset>
+        <?php $index++; } ?>
+        <details class="mb-4" open>
+            <summary><?php $this->_('AdminMain.pending_diff'); ?></summary>
+            <?php foreach (['added', 'removed', 'labels'] as $kind) { ?>
+                <h3 class="h5 mt-3"><?php $this->_('AdminMain.' . $kind); ?> (<?php echo $this->Html->safe(count($preview['changes'][$kind])); ?>)</h3>
+                <ul>
+                    <?php foreach ($preview['changes'][$kind] as $value => $label) { ?>
+                        <li><code><?php echo $this->Html->safe($value); ?></code>:
+                            <?php echo $this->Html->safe(is_array($label) ? $label['before'] . ' -> ' . $label['after'] : $label); ?>
+                        </li>
+                    <?php } ?>
+                </ul>
+            <?php } ?>
+        </details>
+        <button class="btn btn-danger" type="submit" name="confirm_apply" value="1"><?php $this->_('AdminMain.confirm'); ?></button>
+        <button class="btn btn-outline-secondary" type="submit" name="refresh" value="1" formnovalidate><?php $this->_('AdminMain.refresh'); ?></button>
+        <?php $this->Form->end(); ?>
+    </div>
+</div>

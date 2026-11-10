@@ -1,0 +1,82 @@
+<div class="card">
+    <div class="card-header"><h2><?php $this->_('AdminMain.history'); ?></h2></div>
+    <div class="card-body">
+        <nav class="d-flex gap-2 mb-3">
+            <a class="btn btn-outline-secondary" href="<?php echo $this->Html->safe($sync_uri . 'index/'); ?>"><?php $this->_('AdminMain.settings'); ?></a>
+            <a class="btn btn-outline-secondary" href="<?php echo $this->Html->safe($sync_uri . 'resolve/'); ?>"><?php $this->_('AdminMain.resolve'); ?></a>
+        </nav>
+        <p><?php $this->_('AdminMain.history_help'); ?></p>
+        <?php if (!$batches) { ?>
+            <p><?php $this->_('AdminMain.empty_history'); ?></p>
+        <?php } else { ?>
+            <div class="table-responsive">
+                <table class="table">
+                    <thead><tr>
+                        <?php foreach (['batch', 'date', 'field', 'source', 'kind', 'status', 'summary', 'action'] as $column) { ?>
+                            <th><?php $this->_('AdminMain.' . $column); ?></th>
+                        <?php } ?>
+                    </tr></thead>
+                    <tbody>
+                    <?php foreach ($batches as $batch) { ?>
+                        <tr>
+                            <td><?php echo $this->Html->safe($batch->id); ?></td>
+                            <td><?php echo $this->Html->safe($batch->created_at); ?></td>
+                            <td><?php echo $this->Html->safe($batch->field_id); ?></td>
+                            <td><?php echo $this->Html->safe($batch->source . ($batch->staff_id === null ? '' : ' #' . $batch->staff_id)); ?></td>
+                            <td><?php echo $this->Html->safe($batch->kind); ?></td>
+                            <td><?php echo $this->Html->safe($batch->status); ?></td>
+                            <td><code><?php echo $this->Html->safe($batch->summary); ?></code></td>
+                            <td>
+                                <a href="<?php echo $this->Html->safe($sync_uri . 'history/' . $batch->id . '/'); ?>"><?php $this->_('AdminMain.view'); ?></a>
+                                <?php if ($latest && (int) $batch->id === (int) $latest->id) { ?>
+                                    <?php $this->Form->create($sync_uri . 'rollback/'); ?>
+                                    <?php $this->Form->fieldHidden('batch_id', $batch->id); ?>
+                                    <label class="form-check">
+                                        <?php $this->Form->fieldCheckbox('confirm_rollback', '1', false, ['class' => 'form-check-input', 'required' => 'required']); ?>
+                                        <span><?php $this->_('AdminMain.rollback_warning'); ?></span>
+                                    </label>
+                                    <button class="btn btn-sm btn-danger" type="submit"><?php $this->_('AdminMain.rollback'); ?></button>
+                                    <?php $this->Form->end(); ?>
+                                <?php } ?>
+                            </td>
+                        </tr>
+                    <?php } ?>
+                    </tbody>
+                </table>
+            </div>
+            <nav class="d-flex gap-2 mb-3">
+                <?php if ($page > 1) { ?>
+                    <a href="<?php echo $this->Html->safe($sync_uri . 'history/?page=' . ($page - 1)); ?>"><?php $this->_('AdminMain.previous'); ?></a>
+                <?php } ?>
+                <?php if (count($batches) === 20) { ?>
+                    <a href="<?php echo $this->Html->safe($sync_uri . 'history/?page=' . ($page + 1)); ?>"><?php $this->_('AdminMain.next'); ?></a>
+                <?php } ?>
+            </nav>
+        <?php } ?>
+        <?php if ($selected) { ?>
+            <h3><?php $this->_('AdminMain.batch'); ?> #<?php echo $this->Html->safe($selected->id); ?></h3>
+            <?php foreach (['before' => $selected->before_options, 'after' => $selected->after_options] as $label => $options) { ?>
+                <details class="mb-3">
+                    <summary><?php $this->_('AdminMain.' . $label); ?></summary>
+                    <pre class="text-wrap"><?php echo $this->Html->safe($options); ?></pre>
+                </details>
+            <?php } ?>
+            <h4><?php $this->_('AdminMain.items'); ?></h4>
+            <div class="table-responsive">
+                <table class="table">
+                    <thead><tr><th><?php $this->_('AdminMain.client'); ?></th><th><?php $this->_('AdminMain.old_value'); ?></th><th><?php $this->_('AdminMain.new'); ?></th><th><?php $this->_('AdminMain.action'); ?></th></tr></thead>
+                    <tbody>
+                    <?php foreach ($items as $item) { ?>
+                        <tr>
+                            <td><a href="<?php echo $this->Html->safe($this->base_uri . 'clients/view/' . $item->client_id . '/'); ?>">#<?php echo $this->Html->safe($item->client_id); ?></a></td>
+                            <td><code><?php echo $this->Html->safe($item->old_value); ?></code></td>
+                            <td><code><?php echo $this->Html->safe($item->new_value); ?></code></td>
+                            <td><?php echo $this->Html->safe($item->action); ?></td>
+                        </tr>
+                    <?php } ?>
+                    </tbody>
+                </table>
+            </div>
+        <?php } ?>
+    </div>
+</div>

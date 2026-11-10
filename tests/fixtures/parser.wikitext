@@ -1,0 +1,29 @@
+An unrelated table must not be selected.
+{| class="wikitable"
+! Name !! Number
+|-
+| Other || 1
+|}
+{| class="wikitable sortable"
+|+ Synthetic parser cases
+! Council number !! Council name !! Headquarters city !! Headquarters state !! Camps
+|-
+| 662 || [[Longhorn Council]]<ref name="example">A reference with || separators</ref> || [[Fort Worth, Texas|Fort Worth]] || [[Scouting in Texas|Texas]] || {{plainlist|
+* One camp
+* Another camp
+}}
+|-
+| 358 || [[Patriots' Path Council]] || Cedar Knolls || New Jersey || None
+|-
+| 803 || {{nowrap|Far East Council}} || Okinawa || Japan || None
+|-
+| 802 || Transatlantic Council || Brussels || Belgium || None
+|-
+| 901
+| Northeast Region
+| n/a
+| n/a
+| None
+|-
+| 661 || Puerto Rico Council || [[Guaynabo, Puerto Rico|Guaynabo]] || Puerto Rico || None
+|}

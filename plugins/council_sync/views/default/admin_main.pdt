@@ -1,0 +1,78 @@
+<div class="card">
+    <div class="card-header"><h2><?php $this->_('AdminMain.title'); ?></h2></div>
+    <div class="card-body">
+        <nav class="d-flex gap-2 mb-4">
+            <a class="btn btn-outline-secondary" href="<?php echo $this->Html->safe($sync_uri . 'resolve/'); ?>"><?php $this->_('AdminMain.resolve'); ?></a>
+            <a class="btn btn-outline-secondary" href="<?php echo $this->Html->safe($sync_uri . 'history/'); ?>"><?php $this->_('AdminMain.history'); ?></a>
+        </nav>
+        <?php if (!$fields) { ?>
+            <div class="alert alert-warning"><?php $this->_('AdminMain.no_fields'); ?></div>
+        <?php } ?>
+        <?php $this->Form->create($sync_uri . 'index/'); ?>
+        <div class="mb-3">
+            <label class="form-label" for="field_id"><?php $this->_('AdminMain.field'); ?></label>
+            <?php
+            $options = ['' => $this->_('AdminMain.choose', true)];
+            foreach ($fields as $field) {
+                $options[$field->id] = strip_tags($field->real_name) . ' (#' . $field->client_group_id . ')';
+            }
+            $this->Form->fieldSelect('field_id', $options, $settings['field_id'], ['id' => 'field_id', 'class' => 'form-select']);
+            ?>
+            <div class="form-text"><?php $this->_('AdminMain.field_help'); ?></div>
+        </div>
+        <div class="mb-3">
+            <label class="form-label" for="staff_group_id"><?php $this->_('AdminMain.staff_group'); ?></label>
+            <?php
+            $options = ['' => $this->_('AdminMain.choose', true)];
+            foreach ($groups as $group) {
+                $options[$group->id] = $group->name;
+            }
+            $this->Form->fieldSelect('staff_group_id', $options, $settings['staff_group_id'], ['id' => 'staff_group_id', 'class' => 'form-select']);
+            ?>
+        </div>
+        <?php if ($support_active) { ?>
+            <div class="mb-3">
+                <label class="form-label" for="department_id"><?php $this->_('AdminMain.department'); ?></label>
+                <?php
+                $options = ['' => $this->_('AdminMain.email_only', true)];
+                foreach ($departments as $department) {
+                    $options[$department->id] = $department->name;
+                }
+                $this->Form->fieldSelect('department_id', $options, $settings['department_id'], ['id' => 'department_id', 'class' => 'form-select']);
+                ?>
+                <div class="form-text"><?php $this->_('AdminMain.department_help'); ?></div>
+            </div>
+        <?php } ?>
+        <div class="mb-3">
+            <label class="form-label" for="contact"><?php $this->_('AdminMain.contact'); ?></label>
+            <?php $this->Form->fieldText('contact', $settings['contact'], ['id' => 'contact', 'class' => 'form-control', 'maxlength' => 255, 'required' => 'required']); ?>
+            <div class="form-text"><?php $this->_('AdminMain.contact_help'); ?></div>
+        </div>
+        <div class="mb-3">
+            <label class="form-label" for="max_drop"><?php $this->_('AdminMain.tolerance'); ?></label>
+            <?php $this->Form->fieldNumber('max_drop', $settings['max_drop'], 0, 99, 1, ['id' => 'max_drop', 'class' => 'form-control', 'required' => 'required']); ?>
+            <div class="form-text"><?php $this->_('AdminMain.tolerance_help'); ?></div>
+        </div>
+        <div class="mb-3">
+            <label class="form-label" for="frequency"><?php $this->_('AdminMain.frequency'); ?></label>
+            <?php $this->Form->fieldNumber('frequency', $settings['frequency'], 1, 4294967295, 1, ['id' => 'frequency', 'class' => 'form-control', 'required' => 'required']); ?>
+            <div class="form-text"><?php $this->_('AdminMain.frequency_help'); ?></div>
+        </div>
+        <fieldset class="border border-danger rounded p-3 mb-3">
+            <label class="form-check">
+                <?php $this->Form->fieldCheckbox('purge', '1', (string) $settings['purge'] === '1', ['class' => 'form-check-input']); ?>
+                <span class="form-check-label"><?php $this->_('AdminMain.purge'); ?></span>
+            </label>
+            <p class="text-danger"><?php $this->_('AdminMain.purge_help'); ?></p>
+            <label class="form-label" for="purge_confirmation"><?php $this->_('AdminMain.purge_confirmation'); ?></label>
+            <?php $this->Form->fieldText('purge_confirmation', '', ['id' => 'purge_confirmation', 'class' => 'form-control', 'autocomplete' => 'off']); ?>
+        </fieldset>
+        <button class="btn btn-primary" type="submit"><?php $this->_('AdminMain.save'); ?></button>
+        <?php $this->Form->end(); ?>
+        <hr>
+        <p><?php $this->_('AdminMain.manual_help'); ?></p>
+        <?php $this->Form->create($sync_uri . 'update/'); ?>
+        <button class="btn btn-primary" type="submit"><?php $this->_('AdminMain.update'); ?></button>
+        <?php $this->Form->end(); ?>
+    </div>
+</div>

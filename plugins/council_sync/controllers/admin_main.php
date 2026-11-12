@@ -28,22 +28,34 @@ class AdminMain extends CouncilSyncController
             $groups = $this->CouncilSync->StaffGroups->getAll($this->syncCompany);
             $support_active = $this->CouncilSync->supportActive($this->syncCompany);
             $departments = $this->CouncilSync->departments($this->syncCompany);
+            $version_status = $this->CouncilSync->versionStatus($this->syncCompany);
             $run = $this->CouncilSync->CronTasks->getTaskRunByKey('sync', 'council_sync');
             if (!$run || (int) $run->company_id !== $this->syncCompany) {
                 throw new CouncilSyncIssue('settings', 'cron_missing');
             }
             $settings['frequency'] = (int) $run->interval;
-            foreach (['field_id', 'staff_group_id', 'department_id', 'contact', 'max_drop', 'frequency', 'purge'] as $key) {
+            foreach (['field_id', 'staff_group_id', 'department_id', 'contact', 'max_drop', 'frequency', 'purge', 'email_enabled', 'ticket_enabled', 'updates_enabled'] as $key) {
                 if (array_key_exists($key, $this->post) && is_scalar($this->post[$key])) {
                     $settings[$key] = $this->post[$key];
                 }
             }
-            $this->set(compact('settings', 'fields', 'groups', 'support_active', 'departments'));
+            $this->set(compact('settings', 'fields', 'groups', 'support_active', 'departments', 'version_status'));
             $this->view->setView('admin_main', 'council_sync.default');
         } catch (CouncilSyncIssue|PDOException|JsonException $error) {
             $this->syncError($error);
             $this->redirect($this->base_uri);
         }
+    }
+
+    public function checkupdates()
+    {
+        try {
+            $this->requireSyncPost();
+            $this->CouncilSync->checkForUpdates($this->syncCompany, true);
+        } catch (CouncilSyncIssue|PDOException|JsonException $error) {
+            $this->syncError($error);
+        }
+        $this->redirect($this->syncUri());
     }
 
     public function update()

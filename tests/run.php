@@ -47,7 +47,7 @@ test('row-count threshold is exact and never allows zero', function () {
     issue('state_unknown', fn() => CouncilSync::stateAbbreviation('Unknown location'));
 });
 test('required contact builds the precise Wikimedia User-Agent', function () {
-    same('CouncilSync-Blesta/1.0.0 (https://example.com/council-sync) PHP/' . PHP_VERSION, CouncilSync::userAgent('https://example.com/council-sync'));
+    same('CouncilSync-Blesta/1.1.0 (https://example.com/council-sync) PHP/' . PHP_VERSION, CouncilSync::userAgent('https://example.com/council-sync'));
     same('support@example.com', CouncilSync::validateContact('support@example.com'));
     foreach (['', "support@example.com\r\nInjected: header", 'not-a-contact', 'ftp://example.com'] as $contact) {
         issue('contact', fn() => CouncilSync::validateContact($contact));

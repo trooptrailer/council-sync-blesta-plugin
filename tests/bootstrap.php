@@ -55,9 +55,14 @@ class TestCouncilSync extends CouncilSync
 {
     public array $response = [];
     public int $requests = 0;
+    public array $releaseResponse = ['status' => 404, 'body' => '{}'];
+    public ?CouncilSyncIssue $releaseFailure = null;
+    public int $releaseRequests = 0;
+    public int $clock;
 
     public function __construct(public TestRecord $Record, public TestClients $Clients)
     {
+        $this->clock = time();
     }
 
     public function source(array $rows): void
@@ -73,12 +78,38 @@ class TestCouncilSync extends CouncilSync
         $this->requests++;
         return $this->response;
     }
+
+    public function release(string $tag): void
+    {
+        $this->releaseResponse = [
+            'status' => 200,
+            'body' => json_encode([
+                'tag_name' => $tag, 'draft' => false, 'prerelease' => false,
+                'html_url' => 'https://github.com/' . self::REPOSITORY . '/releases/tag/' . $tag
+            ])
+        ];
+    }
+
+    protected function updateRequest(): array
+    {
+        $this->releaseRequests++;
+        if ($this->releaseFailure !== null) {
+            throw $this->releaseFailure;
+        }
+        return $this->releaseResponse;
+    }
+
+    public function now(): int
+    {
+        return $this->clock;
+    }
 }
 
 class TestRecord
 {
     public array $trace = [];
     public bool $lockAvailable = true;
+    public bool $failSchema = false;
     private string $table = '';
     private string $columns = '*';
     private array $conditions = [];
@@ -107,6 +138,40 @@ class TestRecord
             $parameters = $parameters[0];
         }
         if ($this->pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'sqlite') {
+            if (str_starts_with($sql, 'CREATE TABLE IF NOT EXISTS')) {
+                if ($this->failSchema) {
+                    throw new PDOException('Synthetic schema failure');
+                }
+                $sql = preg_replace('~\) ENGINE=InnoDB.*$~s', ')', $sql);
+                $sql = preg_replace("~ENUM\\([^)]*\\)~", 'TEXT', $sql);
+                $sql = str_replace('BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY', 'INTEGER PRIMARY KEY AUTOINCREMENT', $sql);
+                $sql = preg_replace('~, KEY company_id_id \(company_id,id\)~', '', $sql);
+            }
+            if (str_contains($sql, 'information_schema.COLUMNS')) {
+                return $this->query(
+                    'SELECT name, CASE WHEN "notnull" = 1 THEN \'NO\' ELSE \'YES\' END AS nullable FROM pragma_table_info(?)',
+                    $parameters[0]
+                );
+            }
+            if ($sql === 'ALTER TABLE council_sync_issues MODIFY notified_at DATETIME NULL') {
+                $columns = $this->pdo->query('PRAGMA table_info(council_sync_issues)')->fetchAll();
+                $definitions = [];
+                $keys = [];
+                foreach ($columns as $column) {
+                    $definitions[] = $column->name . ' ' . $column->type
+                        . ($column->notnull && $column->name !== 'notified_at' ? ' NOT NULL' : '');
+                    if ($column->pk) {
+                        $keys[$column->pk] = $column->name;
+                    }
+                }
+                ksort($keys);
+                $definitions[] = 'PRIMARY KEY (' . implode(',', $keys) . ')';
+                $this->pdo->exec('CREATE TABLE council_sync_issues_nullable (' . implode(',', $definitions) . ')');
+                $this->pdo->exec('INSERT INTO council_sync_issues_nullable SELECT * FROM council_sync_issues');
+                $this->pdo->exec('DROP TABLE council_sync_issues');
+                $this->pdo->exec('ALTER TABLE council_sync_issues_nullable RENAME TO council_sync_issues');
+                return $this->pdo->query('SELECT 1');
+            }
             if (str_contains($sql, 'GET_LOCK')) {
                 return $this->pdo->query('SELECT ' . (int) $this->lockAvailable . ' AS acquired');
             }
@@ -289,14 +354,17 @@ function database(array $options, array $assignments = [], bool $encrypted = fal
     $pdo->exec('CREATE TABLE client_values (client_field_id INTEGER, client_id INTEGER, value TEXT, encrypted INTEGER,
         PRIMARY KEY (client_field_id,client_id))');
     $pdo->exec('CREATE TABLE council_sync_settings (company_id INTEGER PRIMARY KEY, field_id INTEGER, staff_group_id INTEGER,
-        department_id INTEGER, contact TEXT, max_drop INTEGER, frequency INTEGER, previous_count INTEGER, purge INTEGER)');
+        department_id INTEGER, contact TEXT, max_drop INTEGER, frequency INTEGER, previous_count INTEGER, purge INTEGER,
+        email_enabled INTEGER, ticket_enabled INTEGER, updates_enabled INTEGER)');
     $pdo->exec('CREATE TABLE council_sync_batches (id INTEGER PRIMARY KEY AUTOINCREMENT, company_id INTEGER, field_id INTEGER,
         created_at TEXT, source TEXT, staff_id INTEGER, summary TEXT, before_options TEXT, after_options TEXT,
         before_default TEXT, after_default TEXT, field_signature TEXT, status TEXT, kind TEXT, rollback_of INTEGER)');
     $pdo->exec('CREATE TABLE council_sync_items (batch_id INTEGER, client_id INTEGER, old_value TEXT, new_value TEXT, action TEXT,
         PRIMARY KEY (batch_id,client_id))');
     $pdo->exec('CREATE TABLE council_sync_issues (company_id INTEGER, field_id INTEGER, hash TEXT, kind TEXT, ticket_id INTEGER,
-        notified_at TEXT, PRIMARY KEY (company_id,field_id,hash))');
+        notified_at TEXT, email_notified_at TEXT, ticket_notified_at TEXT, emailed_staff TEXT, PRIMARY KEY (company_id,field_id,hash))');
+    $pdo->exec('CREATE TABLE council_sync_updates (company_id INTEGER PRIMARY KEY, checked_at TEXT, last_success_at TEXT,
+        latest_version TEXT, release_url TEXT, error_code TEXT)');
     $record->insert('client_fields', [
         'id' => 1, 'client_group_id' => 1, 'name' => 'Council', 'link' => null, 'is_lang' => 0, 'type' => 'select',
         'values' => json_encode(array_flip($options)), 'default' => $default, 'regex' => null,
@@ -304,7 +372,8 @@ function database(array $options, array $assignments = [], bool $encrypted = fal
     ]);
     $record->insert('council_sync_settings', [
         'company_id' => 1, 'field_id' => 1, 'staff_group_id' => 1, 'department_id' => null,
-        'contact' => 'https://example.com/council-sync', 'max_drop' => 10, 'frequency' => 1440, 'previous_count' => null, 'purge' => 0
+        'contact' => 'https://example.com/council-sync', 'max_drop' => 10, 'frequency' => 1440, 'previous_count' => null, 'purge' => 0,
+        'email_enabled' => 1, 'ticket_enabled' => 1, 'updates_enabled' => 1
     ]);
     foreach ($assignments as $client => $value) {
         $record->insert('client_values', [

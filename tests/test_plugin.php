@@ -196,8 +196,12 @@ class TestStaff
 class TestPluginManager
 {
     public bool $active = false;
+    public ?string $installedVersion = null;
     public function getByDir(string $dir, ?int $company = null): array
     {
+        if ($dir === 'council_sync') {
+            return [(object) ['id' => 1, 'company_id' => $company ?? 1, 'version' => $this->installedVersion ?? CouncilSync::packageVersion()]];
+        }
         return $this->active ? [(object) ['id' => 1, 'company_id' => $company ?? 1, 'enabled' => 1]] : [];
     }
     public function get(int $id): object { return (object) ['id' => $id, 'company_id' => 1]; }
@@ -221,9 +225,11 @@ class TestEmails
         if ($this->missingTemplate) {
             return false;
         }
+        $prefix = $action === 'CouncilSync.version' ? 'version_email' : 'email';
         return (object) [
             'from' => 'noreply@example.com', 'from_name' => 'Council Sync', 'subject' => 'Council Sync',
-            'text' => Language::_('CouncilSyncPlugin.email_text', true), 'html' => Language::_('CouncilSyncPlugin.email_html', true)
+            'text' => Language::_('CouncilSyncPlugin.' . $prefix . '_text', true),
+            'html' => Language::_('CouncilSyncPlugin.' . $prefix . '_html', true)
         ];
     }
     public function buildEmail(string $action, int $company, mixed $lang, array $tags): mixed
@@ -266,6 +272,8 @@ class TestTickets
 {
     public bool $failAdd = false;
     public bool $failReply = false;
+    public bool $rejectClientless = false;
+    public bool $omitCompany = false;
     public array $added = [];
     private array $errors = [];
     public function __construct(public TestRecord $Record) {}
@@ -274,12 +282,22 @@ class TestTickets
     {
         $this->added[] = $vars;
         $this->errors = [];
-        if ($this->failAdd) {
+        if ($this->failAdd || ($this->rejectClientless && $vars['client_id'] === null)) {
             $this->errors = ['client' => 'Synthetic rejection'];
             return null;
         }
-        $this->Record->insert('test_tickets', ['client_id' => $vars['client_id'], 'summary' => $vars['summary']]);
+        $this->Record->insert('test_tickets', [
+            'client_id' => $vars['client_id'], 'summary' => $vars['summary'], 'status' => $vars['status'], 'company_id' => 1
+        ]);
         return (int) $this->Record->lastInsertId();
+    }
+    public function get(int $id, bool $replies = true): mixed
+    {
+        $ticket = $this->Record->query('SELECT * FROM test_tickets WHERE id = ?', $id)->fetch();
+        if ($ticket && $this->omitCompany) {
+            unset($ticket->company_id);
+        }
+        return $ticket;
     }
     public function addReply(int $ticket, array $vars, mixed $files, bool $newTicket): ?int
     {
@@ -319,7 +337,7 @@ class TestCronTasks
 
 function plugin(TestCouncilSync $model, bool $ticket = false): CouncilSyncPlugin
 {
-    $model->Record->pdo->exec('CREATE TABLE test_tickets (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER, summary TEXT)');
+    $model->Record->pdo->exec('CREATE TABLE test_tickets (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER, summary TEXT, status TEXT, company_id INTEGER)');
     $model->Record->pdo->exec('CREATE TABLE test_replies (id INTEGER PRIMARY KEY AUTOINCREMENT, ticket_id INTEGER, staff_id INTEGER, details TEXT)');
     $model->Record->pdo->exec('CREATE TABLE cron_task_runs (id INTEGER PRIMARY KEY, task_id INTEGER, company_id INTEGER, interval INTEGER, enabled INTEGER)');
     $model->Record->pdo->exec('INSERT INTO cron_task_runs VALUES (1,1,1,1440,1)');
@@ -364,7 +382,7 @@ function runAction(AdminMain $controller, string $method): void
 
 test('Blesta 6 declarations register daily cron, staff ACL and company email template', function () {
     $instance = plugin(database([]));
-    same(CouncilSync::VERSION, $instance->getVersion());
+    same(CouncilSync::packageVersion(), $instance->getVersion());
     same(1440, $instance->getCronTaskDefinitions()[0]['type_value']);
     same('staff', $instance->getPermissionGroups()[0]['level']);
     same('council_sync.admin_main', $instance->getPermissions()[0]['alias']);
@@ -372,7 +390,9 @@ test('Blesta 6 declarations register daily cron, staff ACL and company email tem
     same('nav_primary_staff', $instance->getActions()[0]['action']);
 });
 test('plugin lifecycle errors use an explicitly initialized Input component', function () {
-    $instance = plugin(database([]));
+    $model = database([]);
+    $instance = plugin($model);
+    $model->Record->failSchema = true;
     $instance->install(1);
     same(true, isset($instance->Input->errors['council_sync']['operation']));
 });
@@ -385,11 +405,17 @@ test('clean cron never sends mail or creates tickets', function () {
     same([], Loader::$models['SupportManagerTickets']->added);
     same(1, count($model->history(1)));
 });
-test('email fallback notifies only the configured group on every blocked cron', function () {
+test('email notifies only the configured group initially and at the weekly boundary', function () {
     $model = database(['a-tx-1' => 'A, TX (1)'], [1 => 'a-tx-1', 2 => 'a-tx-1']);
     $model->source([council('X', 3)]);
     $instance = plugin($model);
     $instance->cron('sync');
+    $instance->cron('sync');
+    same(2, count(Loader::$models['Emails']->sent));
+    $model->clock += 604799;
+    $instance->cron('sync');
+    same(2, count(Loader::$models['Emails']->sent));
+    $model->clock++;
     $instance->cron('sync');
     $sent = Loader::$models['Emails']->sent;
     same(['one@example.com', 'two@example.com', 'one@example.com', 'two@example.com'], array_column($sent, 'to'));
@@ -399,7 +425,7 @@ test('email fallback notifies only the configured group on every blocked cron', 
     same([], $model->history(1));
     same(null, $model->settings(1)['previous_count']);
 });
-test('ticket sets deduplicate permanently, and changed in-use counts open a new ticket', function () {
+test('open ticket sets deduplicate, and changed in-use counts open a new ticket', function () {
     $model = database(['a-tx-1' => 'A, TX (1)'], [1 => 'a-tx-1']);
     $model->source([council('X', 3)]);
     $instance = plugin($model, true);
@@ -415,9 +441,9 @@ test('ticket sets deduplicate permanently, and changed in-use counts open a new 
     same(2, (int) $model->Record->query('SELECT COUNT(*) FROM test_tickets')->fetchColumn());
     $note = $model->Record->query('SELECT details FROM test_replies ORDER BY id LIMIT 1')->fetchColumn();
     same(true, str_contains($note, 'https://example.com/billing/admin/plugin/council_sync/admin_main/resolve/'));
-    same([], Loader::$models['Emails']->sent);
+    same(4, count(Loader::$models['Emails']->sent));
 });
-test('ticket and initial note failures roll back and email the group each run', function () {
+test('ticket and initial note failures roll back without causing extra reminder emails', function () {
     foreach (['failAdd', 'failReply'] as $failure) {
         $model = database(['a-tx-1' => 'A, TX (1)'], [1 => 'a-tx-1']);
         $model->source([council('X', 3)]);
@@ -427,7 +453,7 @@ test('ticket and initial note failures roll back and email the group each run', 
         $instance->cron('sync');
         same(0, (int) $model->Record->query('SELECT COUNT(*) FROM test_tickets')->fetchColumn());
         same(0, (int) $model->Record->query('SELECT COUNT(*) FROM test_replies')->fetchColumn());
-        same(4, count(Loader::$models['Emails']->sent));
+        same(2, count(Loader::$models['Emails']->sent));
         same(true, str_contains(Loader::$models['Emails']->sent[0]['tags']['details'], 'fallback notification'));
     }
 });
@@ -467,14 +493,17 @@ test('partial email delivery and missing templates are explicit failures', funct
     Loader::$models['Emails']->failRecipient = 'two@example.com';
     issue('email_failed', fn() => $instance->cron('sync'));
     same(2, count(Loader::$models['Emails']->sent));
-    same(0, (int) $model->Record->query('SELECT COUNT(*) FROM council_sync_issues')->fetchColumn());
+    same(null, $model->Record->query('SELECT email_notified_at FROM council_sync_issues')->fetchColumn());
     Loader::$models['Emails']->missingTemplate = true;
     issue('email_template', fn() => $instance->cron('sync'));
 });
 test('settings validate groups, schedule changes, and destructive confirmation atomically', function () {
     $model = database([]);
     plugin($model);
-    $input = ['field_id' => '1', 'staff_group_id' => '1', 'contact' => 'support@example.com', 'max_drop' => '10', 'frequency' => '60'];
+    $input = [
+        'field_id' => '1', 'staff_group_id' => '1', 'contact' => 'support@example.com', 'max_drop' => '10', 'frequency' => '60',
+        'email_enabled' => '1', 'ticket_enabled' => '1', 'updates_enabled' => '1'
+    ];
     $model->saveSettings(1, $input);
     same(60, $model->CronTasks->getTaskRunByKey('sync', 'council_sync')->interval);
     $model->CronTasks->failWrite = true;
@@ -601,6 +630,320 @@ test('User-Agent contacts cannot disclose URL credentials', function () {
     issue('contact', fn() => CouncilSync::validateContact('https://user@example.com/contact'));
 });
 
+test('stable releases require this repository, complete version numbers and no prerelease or draft', function () {
+    $model = database([]);
+    $model->release('v2.3.4');
+    same(['version' => '2.3.4', 'url' => 'https://github.com/trooptrailer/council-sync-blesta-plugin/releases/tag/v2.3.4'],
+        CouncilSync::parseRelease($model->releaseResponse['body']));
+    $base = json_decode($model->releaseResponse['body'], true);
+    foreach ([
+        ['draft' => true], ['prerelease' => true], ['tag_name' => '2.3'], ['tag_name' => 'v02.3.4'],
+        ['tag_name' => 'v2.3.4-rc.1'], ['html_url' => 'https://example.com/release'],
+        ['html_url' => 'javascript:alert(1)']
+    ] as $invalid) {
+        issue('release_response', fn() => CouncilSync::parseRelease(json_encode(array_merge($base, $invalid))));
+    }
+    issue('release_response', fn() => CouncilSync::parseRelease('not json'));
+});
+
+class ReleaseTransportProbe extends CouncilSync
+{
+    public array $request = [];
+    public function __construct() {}
+    protected function httpGet(string $url, string $agent, int $limit, array $headers = ['Accept: application/json']): array
+    {
+        $this->request = compact('url', 'agent', 'limit', 'headers');
+        return ['status' => 404, 'body' => '{}'];
+    }
+    public function fetch(): array
+    {
+        return parent::updateRequest();
+    }
+}
+
+test('release transport targets the intended public API without authentication', function () {
+    $probe = new ReleaseTransportProbe();
+    same(404, $probe->fetch()['status']);
+    same('https://api.github.com/repos/trooptrailer/council-sync-blesta-plugin/releases/latest', $probe->request['url']);
+    same(['Accept: application/vnd.github+json', 'X-GitHub-Api-Version: 2026-03-10'], $probe->request['headers']);
+    same(true, str_contains($probe->request['agent'], 'CouncilSync-Blesta/1.1.0'));
+});
+
+test('release checks compare numeric versions and distinguish package, registered and remote versions', function () {
+    $model = database([]);
+    plugin($model);
+    same('unchecked', $model->versionStatus(1)['status']);
+    $model->PluginManager->installedVersion = '1.9.0';
+    $model->release('v1.10.0');
+    $status = $model->checkForUpdates(1);
+    same('outdated', $status['status']);
+    same('1.9.0', $status['installed']);
+    same('1.1.0', $status['package']);
+    same('1.10.0', $status['latest']);
+    same(true, $status['upgrade_required']);
+    $model->PluginManager->installedVersion = CouncilSync::packageVersion();
+    $model->release('v' . CouncilSync::packageVersion());
+    same('current', $model->checkForUpdates(1)['status']);
+    $model->PluginManager->installedVersion = '1.0.0';
+    same('outdated', $model->versionStatus(1)['status']);
+    same([], $model->history(1));
+});
+
+test('private, missing, rate-limited and invalid release responses remain explicitly unavailable', function () {
+    $model = database([]);
+    plugin($model);
+    foreach ([404, 403, 429, 302] as $http) {
+        $model->releaseResponse = ['status' => $http, 'body' => '{}'];
+        $status = $model->checkForUpdates(1);
+        same('unavailable', $status['status']);
+        same('http_' . $http, $status['error_code']);
+        same(null, $status['latest']);
+        same(null, $status['last_success_at']);
+    }
+    $model->release('v2.0.0');
+    $success = $model->checkForUpdates(1);
+    $model->clock += 60;
+    $model->releaseResponse = ['status' => 200, 'body' => 'invalid'];
+    $failed = $model->checkForUpdates(1);
+    same('unavailable', $failed['status']);
+    same('release_response', $failed['error_code']);
+    same('2.0.0', $failed['latest']);
+    same($success['last_success_at'], $failed['last_success_at']);
+    $model->releaseFailure = new CouncilSyncIssue('fetch', 'transport');
+    same('transport', $model->checkForUpdates(1)['error_code']);
+    same([], Loader::$models['Emails']->sent);
+});
+
+test('release cron sends both initial channels, then weekly email and only replaces a closed ticket when due', function () {
+    $model = database([]);
+    $instance = plugin($model, true);
+    $model->release('v2.0.0');
+    $instance->cron('updates');
+    same(2, count(Loader::$models['Emails']->sent));
+    same(1, count(Loader::$models['SupportManagerTickets']->added));
+    same(0, $model->requests);
+    $body = Loader::$models['Emails']->sent[0]['body']['text'];
+    same(true, str_contains($body, 'software notice'));
+    same(true, str_contains(Loader::$models['Emails']->sent[0]['tags']['details'], '2.0.0'));
+    $model->Record->query("UPDATE test_tickets SET status = 'closed'");
+    $model->clock += 604799;
+    $instance->cron('updates');
+    same(1, count(Loader::$models['SupportManagerTickets']->added));
+    same(2, count(Loader::$models['Emails']->sent));
+    $model->clock++;
+    $instance->cron('updates');
+    same(2, count(Loader::$models['SupportManagerTickets']->added));
+    same(4, count(Loader::$models['Emails']->sent));
+    $model->clock += 604800;
+    $instance->cron('updates');
+    same(2, count(Loader::$models['SupportManagerTickets']->added));
+    same(6, count(Loader::$models['Emails']->sent));
+    $model->release('v' . CouncilSync::packageVersion());
+    $model->clock += 604800;
+    $instance->cron('updates');
+    same(6, count(Loader::$models['Emails']->sent));
+    same([], $model->history(1));
+});
+
+test('new versions get new notices, independent of the selected council field', function () {
+    $model = database([]);
+    $instance = plugin($model, true);
+    $model->release('v2.0.0');
+    $instance->cron('updates');
+    $model->Record->query('UPDATE council_sync_settings SET field_id = 2');
+    $instance->cron('updates');
+    same(1, count(Loader::$models['SupportManagerTickets']->added));
+    $model->release('v2.1.0');
+    $instance->cron('updates');
+    same(2, count(Loader::$models['SupportManagerTickets']->added));
+    same(4, count(Loader::$models['Emails']->sent));
+    same([0, 0], array_map('intval', $model->Record->query('SELECT field_id FROM council_sync_issues')->fetchAll(PDO::FETCH_COLUMN)));
+});
+
+test('unavailable release checks use the same weekly notification policy without claiming an update exists', function () {
+    $model = database([]);
+    $instance = plugin($model, true);
+    $instance->cron('updates');
+    $instance->cron('updates');
+    same('unavailable', $model->versionStatus(1)['status']);
+    same(2, count(Loader::$models['Emails']->sent));
+    same(1, count(Loader::$models['SupportManagerTickets']->added));
+    same(true, str_contains(Loader::$models['Emails']->sent[0]['tags']['details'], 'private GitHub releases'));
+    $model->clock += 604800;
+    $instance->cron('updates');
+    same(4, count(Loader::$models['Emails']->sent));
+    same(1, count(Loader::$models['SupportManagerTickets']->added));
+    $model->Record->query('UPDATE council_sync_settings SET updates_enabled = 0');
+    $requests = $model->releaseRequests;
+    $instance->cron('updates');
+    same($requests, $model->releaseRequests);
+});
+
+test('notification channel switches independently gate every type of notice', function () {
+    foreach (['sync', 'updates'] as $cron) {
+        foreach ([[1, 0], [0, 1], [0, 0], [1, 1]] as [$email, $ticket]) {
+            $model = database(['a-tx-1' => 'A, TX (1)'], [1 => 'a-tx-1']);
+            $model->source([council('X', 3)]);
+            $model->release('v2.0.0');
+            $instance = plugin($model, true);
+            $model->Record->query('UPDATE council_sync_settings SET email_enabled = ?, ticket_enabled = ?', [$email, $ticket]);
+            $instance->cron($cron);
+            same($email * 2, count(Loader::$models['Emails']->sent));
+            same($ticket, count(Loader::$models['SupportManagerTickets']->added));
+        }
+    }
+});
+
+test('a ticket success survives email failure without duplicate tickets on retry', function () {
+    $model = database([]);
+    $instance = plugin($model, true);
+    $model->release('v2.0.0');
+    Loader::$models['Emails']->failRecipient = 'two@example.com';
+    issue('email_failed', fn() => $instance->cron('updates'));
+    same(1, count(Loader::$models['SupportManagerTickets']->added));
+    Loader::$models['Emails']->failRecipient = null;
+    $instance->cron('updates');
+    same(1, count(Loader::$models['SupportManagerTickets']->added));
+    same(['one@example.com', 'two@example.com', 'two@example.com'], array_column(Loader::$models['Emails']->sent, 'to'));
+    $issue = $model->Record->query('SELECT * FROM council_sync_issues')->fetch();
+    same(gmdate('Y-m-d H:i:s', $model->clock), $issue->email_notified_at);
+    same(gmdate('Y-m-d H:i:s', $model->clock), $issue->ticket_notified_at);
+});
+
+test('clientless rejection never creates a dummy client or sends disabled fallback email', function () {
+    $model = database([]);
+    $instance = plugin($model, true);
+    $model->release('v2.0.0');
+    Loader::$models['SupportManagerTickets']->rejectClientless = true;
+    $model->Record->query('UPDATE council_sync_settings SET email_enabled = 0');
+    issue('ticket_failed', fn() => $instance->cron('updates'));
+    same([], Loader::$models['Emails']->sent);
+    same(null, Loader::$models['SupportManagerTickets']->added[0]['client_id']);
+    same(0, (int) $model->Record->query('SELECT COUNT(*) FROM test_tickets')->fetchColumn());
+    $model->Record->query('UPDATE council_sync_settings SET email_enabled = 1');
+    $instance->cron('updates');
+    same(2, count(Loader::$models['Emails']->sent));
+});
+
+test('missing metadata, missing tickets and cross-company tickets are not silently replaced', function () {
+    $model = database([]);
+    $instance = plugin($model, true);
+    $model->release('v2.0.0');
+    $instance->cron('updates');
+    Loader::$models['SupportManagerTickets']->omitCompany = true;
+    $model->clock += 604800;
+    $instance->cron('updates');
+    same(1, count(Loader::$models['SupportManagerTickets']->added));
+    same(4, count(Loader::$models['Emails']->sent));
+    Loader::$models['SupportManagerTickets']->omitCompany = false;
+    $model->Record->query('UPDATE test_tickets SET company_id = 2');
+    $model->clock += 604800;
+    $instance->cron('updates');
+    same(1, count(Loader::$models['SupportManagerTickets']->added));
+    same(6, count(Loader::$models['Emails']->sent));
+    $model->Record->query('DELETE FROM test_tickets');
+    $model->clock += 604800;
+    $instance->cron('updates');
+    same(1, count(Loader::$models['SupportManagerTickets']->added));
+    same(8, count(Loader::$models['Emails']->sent));
+});
+
+test('manual release checks require CSRF and never send email or tickets', function () {
+    $model = database([]);
+    $model->release('v2.0.0');
+    $controller = controller($model);
+    $model->Record->query('UPDATE council_sync_settings SET updates_enabled = 0');
+    $_SERVER['REQUEST_METHOD'] = 'GET';
+    runAction($controller, 'checkupdates');
+    same(0, $model->releaseRequests);
+    $_SERVER['REQUEST_METHOD'] = 'POST';
+    $controller->post = ['_csrf_token' => 'wrong'];
+    runAction($controller, 'checkupdates');
+    same(0, $model->releaseRequests);
+    $controller->post = ['_csrf_token' => $controller->Form->token('/billing/admin/plugin/council_sync/admin_main/checkupdates/')];
+    runAction($controller, 'checkupdates');
+    same(1, $model->releaseRequests);
+    same('outdated', $model->versionStatus(1)['status']);
+    same([], Loader::$models['Emails']->sent);
+    same([], Loader::$models['SupportManagerTickets']->added);
+});
+
+test('delivery settings persist switches, allow both disabled, and validate enabled-channel destinations', function () {
+    $model = database([]);
+    plugin($model);
+    $input = ['field_id' => '1', 'contact' => 'support@example.com', 'max_drop' => '10', 'frequency' => '1440'];
+    $model->saveSettings(1, $input);
+    $settings = $model->settings(1);
+    same(null, $settings['staff_group_id']);
+    same(0, $settings['email_enabled']);
+    same(0, $settings['ticket_enabled']);
+    same(0, $settings['updates_enabled']);
+    $input['email_enabled'] = '1';
+    issue('staff_group', fn() => $model->saveSettings(1, $input));
+    $input['email_enabled'] = '0';
+    $input['ticket_enabled'] = '1';
+    issue('department', fn() => $model->saveSettings(1, $input));
+    $input['ticket_enabled'] = 'invalid';
+    issue('settings', fn() => $model->saveSettings(1, $input));
+});
+
+test('weekly reminder times are UTC and do not depend on the PHP local time zone', function () {
+    $model = database([]);
+    $timezone = date_default_timezone_get();
+    date_default_timezone_set('Pacific/Honolulu');
+    try {
+        $last = gmdate('Y-m-d H:i:s', $model->clock - 604799);
+        same(false, $model->noticeDue($last));
+        $model->clock++;
+        same(true, $model->noticeDue($last));
+        issue('notice_state', fn() => $model->noticeDue('invalid'));
+    } finally {
+        date_default_timezone_set($timezone);
+    }
+});
+
+test('upgrade preserves old notification history and settings, adds new state, and is repeatable', function () {
+    $model = database([]);
+    plugin($model);
+    foreach (['email_enabled', 'ticket_enabled', 'updates_enabled'] as $column) {
+        $model->Record->pdo->exec('ALTER TABLE council_sync_settings DROP COLUMN ' . $column);
+    }
+    $model->Record->pdo->exec('DROP TABLE council_sync_issues');
+    $model->Record->pdo->exec('CREATE TABLE council_sync_issues (company_id INTEGER, field_id INTEGER, hash TEXT,
+        kind TEXT, ticket_id INTEGER, notified_at TEXT NOT NULL, PRIMARY KEY (company_id,field_id,hash))');
+    $last = gmdate('Y-m-d H:i:s', $model->clock - 100);
+    foreach (['ticket' => 55, 'email' => null] as $hash => $ticket) {
+        $model->Record->insert('council_sync_issues', [
+            'company_id' => 1, 'field_id' => 1, 'hash' => $hash, 'kind' => 'conflicts', 'ticket_id' => $ticket, 'notified_at' => $last
+        ]);
+    }
+    issue('schema_upgrade', fn() => $model->settings(1));
+    $model->installTables(1);
+    $model->installTables(1);
+    same(1, $model->settings(1)['email_enabled']);
+    same(1, $model->settings(1)['ticket_enabled']);
+    same(1, $model->settings(1)['updates_enabled']);
+    same('https://example.com/council-sync', $model->settings(1)['contact']);
+    same($last, $model->issueRecord(1, 1, 'email')->email_notified_at);
+    same($last, $model->issueRecord(1, 1, 'ticket')->ticket_notified_at);
+    same(55, $model->issueRecord(1, 1, 'ticket')->ticket_id);
+    same(null, $model->prepareNotice(1, 0, 'new', 'version')->notified_at);
+    $model->installTables(2);
+    same(null, $model->settings(2)['field_id']);
+    same(1, $model->settings(1)['field_id']);
+});
+
+test('settings display reads cached versions without making a release request', function () {
+    $model = database([]);
+    $controller = controller($model);
+    $_SERVER['REQUEST_METHOD'] = 'GET';
+    runAction($controller, 'index');
+    same('unchecked', $controller->variables['version_status']['status']);
+    same('1.1.0', $controller->variables['version_status']['package']);
+    same(0, $model->releaseRequests);
+    same([], Loader::$models['Emails']->sent);
+});
+
 class TestRenderer
 {
     public string $base_uri = '/billing/admin/';
@@ -640,10 +983,18 @@ test('PDT forms use canonical action paths and escape all council and client out
     same(true, str_contains($html, $renderer->Form->token($base . 'resolve/')));
     $html = $renderer->render('admin_main', [
         'sync_uri' => $base, 'settings' => $model->settings(1), 'fields' => [$model->Clients->getCustomField(1)],
-        'groups' => [], 'support_active' => false, 'departments' => []
+        'groups' => [], 'support_active' => false, 'departments' => [],
+        'version_status' => [
+            'installed' => '1.0.0', 'package' => '1.1.0', 'latest' => null, 'release_url' => null,
+            'checked_at' => null, 'last_success_at' => null, 'status' => 'unchecked', 'upgrade_required' => true, 'error_code' => null
+        ]
     ]);
     same(false, str_contains($html, 'name="department_id"'));
     same(true, str_contains($html, 'action="' . $base . 'index/"'));
     same(true, str_contains($html, 'action="' . $base . 'update/"'));
     same(true, str_contains($html, $renderer->Form->token($base . 'update/')));
+    same(true, str_contains($html, 'action="' . $base . 'checkupdates/"'));
+    foreach (['email_enabled', 'ticket_enabled', 'updates_enabled'] as $setting) {
+        same(true, str_contains($html, 'name="' . $setting . '"'));
+    }
 });

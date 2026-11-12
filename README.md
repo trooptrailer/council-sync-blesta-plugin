@@ -1,157 +1,190 @@
 # Council Sync for Blesta
 
-Synchronizes one client dropdown with every row of Wikipedia's
-[council table](https://en.wikipedia.org/wiki/List_of_councils_(Scouting_America)).
-**Target: Blesta 6.0.4 / PHP 8.3** (owner, 2026-11-06). The plugin is built locally;
-installation under Blesta has not been tested. It does not update the TroopTrailer API.
+Council Sync keeps an existing Blesta client dropdown synchronized with the
+[list of Scouting America councils on Wikipedia](https://en.wikipedia.org/wiki/List_of_councils_(Scouting_America)).
+It detects changes that would leave client values outside the dropdown and provides
+explicit remapping, notifications and an audit history.
 
-## Install
+**Experimental:** development targets Blesta 6.0.4 and PHP 8.3. Automated tests use
+stand-ins; the plugin has not yet been validated in a running Blesta installation.
+Test on a non-production installation and back up the database before use.
 
-1. Start with a disposable Blesta test installation and synthetic clients.
-2. Upload **only** [plugins/council_sync](./plugins/council_sync) to Blesta's
-   `plugins` directory. Do not upload the release ZIP, SQL dump, tests or scratch files.
-3. Install **Council Sync** under Settings > Company > Plugins. Blesta 6 registers
-   its daily cron task and staff email template from the plugin declarations.
-4. Grant **Manage Council Sync** to the appropriate staff group under
-   Settings > System > Staff > Staff Groups.
-5. Open Council Sync, select the field and notification destinations, and save.
-   Confirm the sender in the Council Sync email template is permitted by your mail provider.
-6. Run **Update now** and verify the installed behavior before enabling unattended use.
-   Blesta's normal system cron must also be configured. PHP cURL and transactional
-   MySQL/InnoDB tables are required.
+## Features
+
+- Fetches the council table through the MediaWiki Action API without an API key.
+- Includes every row, including overseas councils, regions and national entries.
+- Generates sorted labels and unique values from council names, locations and numbers.
+- Reads and remaps encrypted client values through Blesta's models.
+- Supports whole-council and per-client remapping, with transactional history and rollback.
+- Provides independently configurable staff email, Support Manager tickets and release checks.
+
+## Requirements
+
+- Blesta 6.0.4 and PHP 8.3 are the development targets; other versions are unverified.
+- PHP cURL, a transactional MySQL/InnoDB database, and configured Blesta cron.
+- Outbound HTTPS access to Wikipedia and, if release checks are enabled, GitHub.
+- Working Blesta email delivery for email notifications.
+- Support Manager installed and enabled for ticket notifications; otherwise it is optional.
+
+## Installation
+
+1. Copy [plugins/council_sync](./plugins/council_sync) into the Blesta installation's
+   `plugins` directory. Deploy only the plugin directory, not the entire repository.
+2. Install **Council Sync** under **Settings > Company > Plugins**.
+3. Grant **Manage Council Sync** to the appropriate staff group under
+   **Settings > System > Staff > Staff Groups**.
+4. Open **Council Sync** in the staff navigation. Select an existing dropdown client
+   field, configure notification destinations, enter a Wikimedia contact and save.
+   Create a dropdown in Blesta's client group settings first if none is available.
+5. Review the Council Sync email templates and ensure their sender is allowed by
+   the configured mail provider.
+6. Run **Update now** and review the result before relying on scheduled updates.
+
+Installation registers separate council-sync and release-check cron tasks, each
+daily by default, plus staff email templates. Blesta's system cron must be running.
 
 ## Settings
 
+Settings are scoped to the current Blesta company.
+
 | Setting | Behavior |
 |---|---|
-| Target dropdown | Existing `select` client field in this company; its client group and encryption flag are preserved. |
-| Staff group | Active members receive fallback email, without adding unrelated template BCC recipients. |
-| Support department | Shown only when Support Manager is installed and enabled for the company; optional. |
-| User-Agent contact | Required public HTTP/HTTPS URL or email; no credentials. Sent as `CouncilSync-Blesta/1.0.0 (<contact>) PHP/<runtime version>`. |
-| Maximum row-count drop | Default 10%, configurable 0-99%; zero rows always fail. Compared with the last successful accepted list. |
-| Cron interval | Positive whole minutes, default 1440. Saving preserves a disabled schedule; the page also reflects changes made in Blesta Automation. |
-| Delete on final uninstall | Off by default. Requires typing `DELETE COUNCIL SYNC DATA`; authorizes deletion of plugin data for **all** companies only on the last uninstall. |
+| Target client dropdown | An existing dropdown in this company. Its client group and encryption flag are preserved. |
+| Email notifications | Enabled by default; sends to active members of the selected staff group. |
+| Ticket notifications | Independently enabled by default; opens internal Support Manager tickets. |
+| Staff group | Required when email is enabled. |
+| Support department | Available when Support Manager is active. Ticket-only delivery requires an active department. |
+| Wikimedia contact | Required public email address or HTTP/HTTPS contact URL for the User-Agent. Do not include credentials. |
+| Maximum row-count drop | Default 10%, configurable from 0 to 99%. Empty lists are always rejected. |
+| Council-sync interval | Positive whole minutes; default 1440. Also configurable through Blesta Automation. |
+| Daily release checks | Enabled by default, independently of council synchronization. |
+| Delete data on final uninstall | Disabled by default; requires explicit confirmation. See [Uninstalling](#uninstalling). |
 
-Fetches use MediaWiki `action=parse`, `prop=wikitext`, without authentication or
-DOM/HTML table scraping. One request, 10-second connection/30-second total timeout,
-4 MiB response limit; no immediate retries or redirects. HTTP failures, malformed
-tables, collisions and sanity failures abort without changing the dropdown or clients.
-Unrecognized headquarters locations or unsupported markup fail rather than being guessed.
+## Council updates and conflicts
 
-## Conflicts and notifications
+Labels use the council name, headquarters state or country, and number, such as
+`Longhorn Council, TX (662)`. Values are lowercase hyphenated slugs, such as
+`longhorn-council-tx-662`. Locations are omitted for rows marked `n/a`.
 
-Additions, label-only edits and unused removals apply silently. A removed value in
-use by **any** client blocks the entire cron update. A number change changes the slug.
-All rows are included, including 800, 802, 803, 901-904 and 999.
+Added options, label-only edits and unused removals apply automatically. If a
+removed or changed value is still assigned to any client, the entire scheduled
+update is blocked. A council number change also changes its value.
 
-With a configured active Support Manager department, the first successful
-notification creates a client-less ticket with an internal system note. Each issue
-hash receives at most one ticket, even if that same issue returns later. Conflicts
-hash only the sorted old-value/count pairs; failures use their own stable hashes.
-Ticket/note failure rolls back the incomplete ticket and falls back to email.
-Email is sent on every blocked cron run when ticket delivery is unavailable.
-Clean runs never notify.
+Fetch failures, unsupported table content, duplicate generated values and excessive
+row-count drops abort without changing dropdown options or client assignments.
+The row-count baseline is the last successfully accepted list.
 
-**Manual actions never notify.** Update now applies safe changes immediately;
-conflicts are staged only in the staff session. Resolve requires an explicit
-decision for each old value: accept the warned orphan, remap everyone, or select
-per-client targets. Remap-all supports explicit per-client overrides. Every target
-must be in the newly fetched list. Previews expire after one hour; changed field,
-client or settings state invalidates confirmation. Truncated per-client forms are
-rejected; large splits may require increasing PHP `max_input_vars`.
+**Update now** applies changes immediately when there are no conflicts. Otherwise,
+it opens a preview that requires an explicit decision for every conflicting value:
+
+- Keep the old client values and explicitly accept that they will be outside the dropdown.
+- Remap all affected clients to one option from the newly fetched list.
+- Select targets per client, with a remap-all default and individual overrides.
+
+Targets must exist in the new list. Previews expire after one hour or become invalid
+when the field, clients or settings change. Large per-client forms may require a
+higher PHP `max_input_vars` limit.
+
+**Manual actions never send notifications or open tickets.**
+
+## Notifications
+
+Scheduled notices cover council conflicts, fetch/parse failures, row-count failures,
+slug collisions, available software releases and failed release checks.
+
+- Each enabled channel sends an initial notification. Enabling both means email
+  **and** a ticket, not one or the other.
+- Email reminders are weekly while the issue persists.
+- Open tickets are not duplicated. On the weekly reminder cadence, a closed or
+  trashed ticket can be replaced. Tickets are not automatically closed when an issue resolves.
+- Failed delivery can retry on the next scheduled run. Successful staff emails
+  are not repeated within the week, and successful tickets are not duplicated.
+- Ticket creation failures use fallback email only when email is enabled.
+  Disabling both channels leaves logging and manual review available.
+- Successful runs without an issue do not notify.
+
+Tickets contain a system-authored internal note with no client attached.
+**Client-less tickets remain unverified in Blesta**, including departments with
+**Clients Only** enabled, staff visibility and subsequent replies. Validate the
+intended department configuration before relying on ticket delivery.
 
 ## History and rollback
 
-Four tables: `council_sync_settings`, `council_sync_batches`,
-`council_sync_items`, `council_sync_issues`. Every applied option/client change
-records before/after option snapshots, source, staff ID and client actions.
-Audited old/new client values use Blesta's system encryption, not plaintext copies.
-Removed defaults are cleared where needed and audited; empty unset defaults are preserved.
+Every applied change records the previous and new option lists, source, staff ID
+for manual actions, and affected client actions. Copies of old and new client
+values in the audit history use Blesta's system encryption.
 
-Apply and rollback share one PDO transaction with Blesta's client models and take
-field/value range locks. Rollback is limited to the company's latest applied update,
-rejects externally changed state or newly orphaned assignments, and creates its own
-audit entry. Uninstall normally retains all plugin tables and never deletes the
-client field or its stored values.
+Only the company's latest applied update can be rolled back. Rollback is blocked
+if the field or affected clients changed afterward, or if restoring the old options
+would orphan another assignment. Applying changes and rolling them back use
+transactions; the rollback itself creates an audit entry.
 
-## Verification and assumptions
+This restores council data, not an earlier version of the plugin software.
 
-**2026-11-06:** 15 PHP/PDT files passed syntax checks and **44 tests passed on PHP
-8.3.36**, offline with SQLite and synthetic Blesta adapters. The owner's original
-240-entry **label=>slug** reference fixture matched the model's value=>label output
-exactly after inversion. The Blesta storage adapter reverses that orientation.
-Run locally with PHP 8.3 and PDO SQLite:
+## Plugin updates
 
-```powershell
-php .\tests\check.php
+The package version is declared in [config.json](./plugins/council_sync/config.json)
+and follows semantic versioning. The release checker compares the version registered
+in Blesta and the package on disk with the latest stable
+[GitHub Release](https://github.com/trooptrailer/council-sync-blesta-plugin/releases).
+It accepts release tags in `X.Y.Z` or `vX.Y.Z` format; a tag alone is not a release.
+
+Checks default to daily. **Check for updates now** performs a manual check without
+notifications. The settings page shows cached versions and check timestamps.
+The plugin never downloads or installs software updates automatically.
+
+The checker uses GitHub's unauthenticated API and requires publicly accessible
+release metadata. Private repositories, missing releases and request failures
+produce an **unavailable** status, not an assumption that the plugin is current.
+Previously verified metadata is retained with its timestamp after a failed check.
+Scheduled release checks can be disabled independently.
+
+### Upgrading
+
+Back up the database, deploy the complete replacement plugin directory, then use
+Blesta's **Upgrade** action before running the plugin. Avoid mixing old and new
+files; reload PHP or its opcode cache as required by the hosting environment.
+Customized email templates and existing automation schedules are preserved.
+
+The 1.1.0 upgrade adds notification controls, delivery tracking and release-check
+state without discarding existing council history.
+
+## Uninstalling
+
+Uninstalling does not remove the client field or its values. Plugin settings,
+history and notification records are retained by default.
+
+To authorize permanent removal of all plugin tables on the final uninstall, enable
+the deletion setting and enter `DELETE COUNCIL SYNC DATA`. This deletes plugin data
+for **all companies**, not just the current company.
+
+## Development and testing
+
+With PHP 8.3 and PDO SQLite available, run from the repository root:
+
+```text
+cd tests
+php check.php
 ```
 
-Or use an isolated Docker runtime from this repository:
+The suite checks PHP/PDT syntax and exercises parsing, conflict resolution,
+transactions, notifications, release checks and form handling with synthetic data,
+mocked HTTP responses and Blesta model stand-ins. No running Blesta installation
+or live external service is required.
 
-```powershell
-$root = (Get-Location).Path
-docker run --rm --network none --mount "type=bind,source=$root\plugins,target=/work/plugins,readonly" --mount "type=bind,source=$root\tests,target=/work/tests,readonly" --workdir /work php:8.3-cli php tests/check.php
-```
+The last recorded run, on 2026-11-11, passed **58 tests and 15 syntax checks** on
+PHP 8.3.36. This is not a live integration certification. Blesta installation and
+upgrades, actual encryption, MySQL locking, staff permissions and layout, cron,
+SMTP, Support Manager and live external requests still require integration testing.
 
-**2026-11-09:** after removing the unused Blesta installation ZIP with owner approval,
-all 15 PHP/PDT syntax checks and 44 tests passed again on PHP 8.3.36. The read-only,
-network-disabled container mounted only the plugin, tests and council fixture.
+See the [Blesta plugin documentation](https://docs.blesta.com/developers/plugins/)
+for framework conventions. Keep credentials, client data, database dumps and
+vendor distributions out of contributions.
 
-**2026-11-10 (unrun):** removed the initial reference JSON and its two fixture-only
-checks; it was not runtime input. The synthetic parser fixture and remaining 42 tests
-stay. No tests or syntax checks were run for this cleanup, at the owner's request;
-the runs recorded above predate it.
+## License
 
-The supplied 6.0.4 ZIP and **schema definitions only** from the dump established:
-`Clients::getCustomFieldValues()` decrypts; `setCustomField()` encrypts;
-`editCustomField()` expects label=>value and returns no success value. Writes are
-checked through errors and rereads. Support Manager permits a null client/email,
-but a separate `addReply()` is needed. Blesta 6 declares cron/email registrations
-through `getCronTaskDefinitions()` / `getEmailTemplates()`; `Plugin` requires its
-Input component to be loaded explicitly.
+[BSD Zero Clause License (0BSD)](./LICENSE). Use, modify, redistribute or sell the
+software without attribution or notice-retention requirements. The software is
+provided without warranty.
 
-**Still unverified:** real Blesta install/upgrade/uninstall, licensed parent classes
-(`AppModel` and `AppController` are ionCube-protected), real encryption, MySQL
-locking/concurrent core client saves, staff ACL/layout, Wikimedia requests from the
-hosting account, cron, SMTP and ticket delivery. Notification URLs use Blesta's
-`admin_uri` template tag and assume HTTPS. Verify the URL on the actual installation;
-use a quiet/maintenance window for bulk remaps or rollback.
-
-References: [plugin conventions](https://docs.blesta.com/developers/plugins/),
-[Clients](https://source-docs.blesta.com/classes/Clients.html),
-[SupportManagerTickets](https://source-docs.blesta.com/classes/SupportManagerTickets.html).
-
-## Source control
-
-**Workflow (owner, 2026-11-09):** keep the GitHub repository private, with `main` as the
-default branch and project changes on `dev`. Create GitHub repositories empty, without a
-README, license or gitignore. The owner handles commits and publication.
-
-For this initially uncommitted checkout, with `dev` checked out and `origin` configured,
-the owner first creates the shared empty baseline:
-
-```powershell
-git commit --allow-empty --only -m "Initialize repository"
-git branch main
-```
-
-`--only` keeps staged project files out of the empty baseline. `main` points to that
-baseline; the later project commit stays on `dev`. Run each step separately and stop
-if it fails.
-
-Never commit dumps, vendor source, configuration, credentials or client data.
-Release ZIPs and source references are ignored. The unused installation ZIP was removed
-with owner approval on 2026-11-09; it is not required by the plugin or tests. Stage only intended files,
-review the staged changes, and, with pre-commit installed, run `pre-commit install`,
-then `pre-commit run gitleaks --all-files`. The hook is not installed automatically.
-Do not continue if the scan fails. Confirm the current branch is `dev`, then:
-
-```powershell
-git commit -m "Initial development version"
-git push -u origin main
-git push -u origin dev
-```
-
-Before pushing, confirm the repository is private in GitHub. Push `main` first and
-confirm it is GitHub's default branch after publication; `dev` remains the local
-development branch. Only committed changes are synchronized by a push.
+This license covers the plugin's original code, not Blesta or third-party source data.

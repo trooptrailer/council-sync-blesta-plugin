@@ -5,6 +5,33 @@
             <a class="btn btn-outline-secondary" href="<?php echo $this->Html->safe($sync_uri . 'resolve/'); ?>"><?php $this->_('AdminMain.resolve'); ?></a>
             <a class="btn btn-outline-secondary" href="<?php echo $this->Html->safe($sync_uri . 'history/'); ?>"><?php $this->_('AdminMain.history'); ?></a>
         </nav>
+        <section class="border rounded p-3 mb-4">
+            <h3 class="h5"><?php $this->_('AdminMain.versions'); ?></h3>
+            <dl>
+                <?php foreach (['installed', 'package', 'latest', 'checked_at', 'last_success_at'] as $key) { ?>
+                    <dt><?php $this->_('AdminMain.version_' . $key); ?></dt>
+                    <dd><?php echo $this->Html->safe($version_status[$key] ?? $this->_('AdminMain.unknown', true)); ?></dd>
+                <?php } ?>
+            </dl>
+            <p><?php $this->_('AdminMain.version_' . $version_status['status']); ?></p>
+            <?php if ($version_status['error_code'] !== null) { ?>
+                <p class="alert alert-warning"><?php echo $this->Html->safe($version_status['error_code']); ?>
+                    <?php $this->_('AdminMain.version_private_help'); ?>
+                </p>
+            <?php } ?>
+            <?php if ($version_status['upgrade_required']) { ?>
+                <p class="alert alert-warning"><?php $this->_('AdminMain.version_upgrade_required'); ?></p>
+            <?php } ?>
+            <?php if ($version_status['release_url']) { ?>
+                <a href="<?php echo $this->Html->safe($version_status['release_url']); ?>" target="_blank" rel="noopener noreferrer"><?php $this->_('AdminMain.version_release'); ?></a>
+            <?php } ?>
+            <?php $this->Form->create($sync_uri . 'checkupdates/'); ?>
+            <button class="btn btn-outline-secondary mt-2" type="submit"><?php $this->_('AdminMain.check_updates'); ?></button>
+            <?php $this->Form->end(); ?>
+        </section>
+        <?php if (!$settings['email_enabled'] && !$settings['ticket_enabled']) { ?>
+            <p class="alert alert-warning"><?php $this->_('AdminMain.notices_disabled'); ?></p>
+        <?php } ?>
         <?php if (!$fields) { ?>
             <div class="alert alert-warning"><?php $this->_('AdminMain.no_fields'); ?></div>
         <?php } ?>
@@ -20,6 +47,17 @@
             ?>
             <div class="form-text"><?php $this->_('AdminMain.field_help'); ?></div>
         </div>
+        <fieldset class="border rounded p-3 mb-3">
+            <legend class="h5"><?php $this->_('AdminMain.notices'); ?></legend>
+            <?php foreach (['email_enabled', 'ticket_enabled', 'updates_enabled'] as $key) { ?>
+                <label class="form-check">
+                    <?php $this->Form->fieldHidden($key, '0'); ?>
+                    <?php $this->Form->fieldCheckbox($key, '1', (string) $settings[$key] === '1', ['class' => 'form-check-input']); ?>
+                    <span class="form-check-label"><?php $this->_('AdminMain.' . $key); ?></span>
+                </label>
+            <?php } ?>
+            <p class="form-text"><?php $this->_('AdminMain.notices_help'); ?></p>
+        </fieldset>
         <div class="mb-3">
             <label class="form-label" for="staff_group_id"><?php $this->_('AdminMain.staff_group'); ?></label>
             <?php

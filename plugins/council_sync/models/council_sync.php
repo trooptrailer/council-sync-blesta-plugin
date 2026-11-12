@@ -28,8 +28,10 @@ class CouncilSyncIssue extends RuntimeException
 
 class CouncilSync extends CouncilSyncModel
 {
-    public const VERSION = '1.0.0';
     public const PAGE = 'List_of_councils_(Scouting_America)';
+    public const REPOSITORY = 'trooptrailer/council-sync-blesta-plugin';
+    public const RELEASE_API = 'https://api.github.com/repos/' . self::REPOSITORY . '/releases/latest';
+    public const REMINDER_SECONDS = 604800;
     private const MAX_RESPONSE_BYTES = 4194304;
     private ?int $lockedCompany = null;
 
@@ -395,31 +397,56 @@ class CouncilSync extends CouncilSyncModel
 
     public static function userAgent(string $contact): string
     {
-        return 'CouncilSync-Blesta/' . self::VERSION . ' (' . self::validateContact($contact) . ') PHP/' . PHP_VERSION;
+        return 'CouncilSync-Blesta/' . self::packageVersion() . ' (' . self::validateContact($contact) . ') PHP/' . PHP_VERSION;
+    }
+
+    public static function packageVersion(): string
+    {
+        $config = json_decode(file_get_contents(dirname(__DIR__) . DIRECTORY_SEPARATOR . 'config.json'), true, 512, JSON_THROW_ON_ERROR);
+        $version = $config['version'] ?? null;
+        if (!is_string($version) || !preg_match('~^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$~D', $version)) {
+            throw new CouncilSyncIssue('settings', 'version_manifest');
+        }
+        return $version;
     }
 
     protected function httpRequest(string $contact): array
     {
-        if (!extension_loaded('curl')) {
-            throw new CouncilSyncIssue('fetch', 'curl_missing');
-        }
         $url = 'https://en.wikipedia.org/w/api.php?' . http_build_query([
             'action' => 'parse', 'page' => self::PAGE, 'prop' => 'wikitext', 'format' => 'json', 'formatversion' => 2
         ], '', '&', PHP_QUERY_RFC3986);
+        return $this->httpGet($url, self::userAgent($contact), self::MAX_RESPONSE_BYTES);
+    }
+
+    protected function updateRequest(): array
+    {
+        return $this->httpGet(
+            self::RELEASE_API,
+            'CouncilSync-Blesta/' . self::packageVersion() . ' (https://github.com/' . self::REPOSITORY . ') PHP/' . PHP_VERSION,
+            262144,
+            ['Accept: application/vnd.github+json', 'X-GitHub-Api-Version: 2026-03-10']
+        );
+    }
+
+    protected function httpGet(string $url, string $agent, int $limit, array $headers = ['Accept: application/json']): array
+    {
+        if (!extension_loaded('curl')) {
+            throw new CouncilSyncIssue('fetch', 'curl_missing');
+        }
         $body = '';
         $tooLarge = false;
         $handle = curl_init($url);
         curl_setopt_array($handle, [
-            CURLOPT_USERAGENT => self::userAgent($contact),
-            CURLOPT_HTTPHEADER => ['Accept: application/json'],
+            CURLOPT_USERAGENT => $agent,
+            CURLOPT_HTTPHEADER => $headers,
             CURLOPT_CONNECTTIMEOUT => 10,
             CURLOPT_TIMEOUT => 30,
             CURLOPT_FOLLOWLOCATION => false,
             CURLOPT_SSL_VERIFYPEER => true,
             CURLOPT_SSL_VERIFYHOST => 2,
             CURLOPT_ENCODING => '',
-            CURLOPT_WRITEFUNCTION => static function ($handle, $chunk) use (&$body, &$tooLarge) {
-                if (strlen($body) + strlen($chunk) > self::MAX_RESPONSE_BYTES) {
+            CURLOPT_WRITEFUNCTION => static function ($handle, $chunk) use (&$body, &$tooLarge, $limit) {
+                if (strlen($body) + strlen($chunk) > $limit) {
                     $tooLarge = true;
                     return 0;
                 }
@@ -473,7 +500,12 @@ class CouncilSync extends CouncilSyncModel
             throw new CouncilSyncIssue('settings', 'not_installed');
         }
         $settings = (array) $row;
-        foreach (['company_id', 'field_id', 'staff_group_id', 'department_id', 'max_drop', 'frequency', 'previous_count', 'purge'] as $key) {
+        foreach (['email_enabled', 'ticket_enabled', 'updates_enabled'] as $key) {
+            if (!array_key_exists($key, $settings)) {
+                throw new CouncilSyncIssue('settings', 'schema_upgrade');
+            }
+        }
+        foreach (['company_id', 'field_id', 'staff_group_id', 'department_id', 'max_drop', 'frequency', 'previous_count', 'purge', 'email_enabled', 'ticket_enabled', 'updates_enabled'] as $key) {
             $settings[$key] = $settings[$key] === null ? null : (int) $settings[$key];
         }
         return $settings;
@@ -510,17 +542,23 @@ class CouncilSync extends CouncilSyncModel
     public function saveSettings(int $company, array $input): void
     {
         $field = self::positiveInt($input['field_id'] ?? null);
-        $group = self::positiveInt($input['staff_group_id'] ?? null);
+        $emailEnabled = self::flag($input, 'email_enabled');
+        $ticketEnabled = self::flag($input, 'ticket_enabled');
+        $updatesEnabled = self::flag($input, 'updates_enabled');
+        $group = ($input['staff_group_id'] ?? '') === '' ? null : self::positiveInt($input['staff_group_id']);
         $frequency = self::positiveInt($input['frequency'] ?? null);
         $drop = filter_var($input['max_drop'] ?? null, FILTER_VALIDATE_INT);
         if ($drop === false || $drop === null || $drop < 0 || $drop > 99) {
             throw new CouncilSyncIssue('settings', 'settings');
         }
         $contact = self::validateContact(is_string($input['contact'] ?? null) ? $input['contact'] : '');
-        $this->locked($company, function () use ($company, $input, $field, $group, $frequency, $drop, $contact) {
+        $this->locked($company, function () use ($company, $input, $field, $group, $frequency, $drop, $contact, $emailEnabled, $ticketEnabled, $updatesEnabled) {
             $this->readField($company, $field);
-            $staffGroup = $this->StaffGroups->get($group);
-            if (!$staffGroup || (int) $staffGroup->company_id !== $company || !$this->Staff->getAll($company, 'active', $group)) {
+            $staffGroup = $group === null ? null : $this->StaffGroups->get($group);
+            if (
+                ($group !== null && (!$staffGroup || (int) $staffGroup->company_id !== $company))
+                || ($emailEnabled && ($group === null || !$this->Staff->getAll($company, 'active', $group)))
+            ) {
                 throw new CouncilSyncIssue('settings', 'staff_group');
             }
             $old = $this->settings($company);
@@ -535,6 +573,9 @@ class CouncilSync extends CouncilSyncModel
                     }
                 }
             }
+            if ($ticketEnabled && !$emailEnabled && (!$department || !$this->supportActive($company))) {
+                throw new CouncilSyncIssue('settings', 'department');
+            }
             $purge = ($input['purge'] ?? null) === '1';
             if ($purge && ($input['purge_confirmation'] ?? null) !== 'DELETE COUNCIL SYNC DATA') {
                 throw new CouncilSyncIssue('settings', 'purge_confirmation');
@@ -544,10 +585,11 @@ class CouncilSync extends CouncilSyncModel
                 throw new CouncilSyncIssue('settings', 'cron_missing');
             }
             $this->bindCoreConnection($this->CronTasks);
-            $this->atomic(function () use ($company, $field, $group, $department, $contact, $drop, $frequency, $purge, $run) {
+            $this->atomic(function () use ($company, $field, $group, $department, $contact, $drop, $frequency, $purge, $run, $emailEnabled, $ticketEnabled, $updatesEnabled) {
                 $this->Record->where('company_id', '=', $company)->update('council_sync_settings', [
                     'field_id' => $field, 'staff_group_id' => $group, 'department_id' => $department,
-                    'contact' => $contact, 'max_drop' => $drop, 'frequency' => $frequency, 'purge' => (int) $purge
+                    'contact' => $contact, 'max_drop' => $drop, 'frequency' => $frequency, 'purge' => (int) $purge,
+                    'email_enabled' => $emailEnabled, 'ticket_enabled' => $ticketEnabled, 'updates_enabled' => $updatesEnabled
                 ]);
                 $this->CronTasks->editTaskRun($run->task_run_id, ['interval' => $frequency]);
                 if ($this->CronTasks->errors()) {
@@ -555,6 +597,15 @@ class CouncilSync extends CouncilSyncModel
                 }
             });
         });
+    }
+
+    private static function flag(array $input, string $key): int
+    {
+        $value = $input[$key] ?? '0';
+        if ($value !== '0' && $value !== '1') {
+            throw new CouncilSyncIssue('settings', 'settings');
+        }
+        return (int) $value;
     }
 
     private static function positiveInt(mixed $value): int
@@ -702,7 +753,7 @@ class CouncilSync extends CouncilSyncModel
     public function preview(int $company): array
     {
         $settings = $this->settings($company);
-        if (!$settings['field_id'] || !$settings['staff_group_id']) {
+        if (!$settings['field_id']) {
             throw new CouncilSyncIssue('settings', 'settings');
         }
         $state = $this->readState($company, $settings['field_id']);
@@ -987,19 +1038,166 @@ class CouncilSync extends CouncilSyncModel
         return $issue ?: null;
     }
 
-    public function rememberNotification(int $company, int $field, string $hash, string $kind, ?int $ticket): void
+    public function now(): int
     {
-        $values = [
-            'company_id' => $company, 'field_id' => $field, 'hash' => $hash, 'kind' => $kind,
-            'ticket_id' => $ticket, 'notified_at' => gmdate('Y-m-d H:i:s')
-        ];
-        $existing = $this->issueRecord($company, $field, $hash);
-        if ($existing) {
-            $this->Record->where('company_id', '=', $company)->where('field_id', '=', $field)->where('hash', '=', $hash)
-                ->update('council_sync_issues', ['ticket_id' => $ticket ?? $existing->ticket_id, 'notified_at' => $values['notified_at']]);
-        } else {
-            $this->Record->insert('council_sync_issues', $values);
+        return time();
+    }
+
+    public function noticeDue(?string $last): bool
+    {
+        if ($last === null) {
+            return true;
         }
+        $date = DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $last, new DateTimeZone('UTC'));
+        if (!$date || $date->format('Y-m-d H:i:s') !== $last) {
+            throw new CouncilSyncIssue('storage', 'notice_state');
+        }
+        return $this->now() - $date->getTimestamp() >= self::REMINDER_SECONDS;
+    }
+
+    public function prepareNotice(int $company, int $field, string $hash, string $kind): object
+    {
+        $issue = $this->issueRecord($company, $field, $hash);
+        if (!$issue) {
+            $this->Record->insert('council_sync_issues', [
+                'company_id' => $company, 'field_id' => $field, 'hash' => $hash, 'kind' => $kind,
+                'ticket_id' => null, 'notified_at' => null, 'email_notified_at' => null, 'ticket_notified_at' => null,
+                'emailed_staff' => null
+            ]);
+            $issue = $this->issueRecord($company, $field, $hash);
+        }
+        if (
+            !$issue || !property_exists($issue, 'email_notified_at')
+            || !property_exists($issue, 'ticket_notified_at') || !property_exists($issue, 'emailed_staff')
+        ) {
+            throw new CouncilSyncIssue('storage', 'schema_upgrade');
+        }
+        return $issue;
+    }
+
+    public function recordEmailNotice(int $company, int $field, string $hash): void
+    {
+        $now = gmdate('Y-m-d H:i:s', $this->now());
+        $this->Record->where('company_id', '=', $company)->where('field_id', '=', $field)->where('hash', '=', $hash)
+            ->update('council_sync_issues', ['email_notified_at' => $now, 'notified_at' => $now]);
+    }
+
+    public function emailDeliveries(object $issue): array
+    {
+        if ($issue->emailed_staff === null) {
+            return [];
+        }
+        try {
+            $deliveries = json_decode($issue->emailed_staff, true, 512, JSON_THROW_ON_ERROR);
+        } catch (JsonException $error) {
+            throw new CouncilSyncIssue('storage', 'notice_state');
+        }
+        if (!is_array($deliveries)) {
+            throw new CouncilSyncIssue('storage', 'notice_state');
+        }
+        foreach ($deliveries as $staff => $at) {
+            if (filter_var($staff, FILTER_VALIDATE_INT) === false || (int) $staff < 1 || !is_string($at)) {
+                throw new CouncilSyncIssue('storage', 'notice_state');
+            }
+        }
+        return $deliveries;
+    }
+
+    public function recordStaffEmail(int $company, int $field, string $hash, int $staff): void
+    {
+        $issue = $this->issueRecord($company, $field, $hash);
+        if (!$issue || $staff < 1) {
+            throw new CouncilSyncIssue('storage', 'notice_state');
+        }
+        $deliveries = $this->emailDeliveries($issue);
+        $deliveries[$staff] = gmdate('Y-m-d H:i:s', $this->now());
+        $this->Record->where('company_id', '=', $company)->where('field_id', '=', $field)->where('hash', '=', $hash)
+            ->update('council_sync_issues', ['emailed_staff' => self::json($deliveries)]);
+    }
+
+    public function recordTicketNotice(int $company, int $field, string $hash, int $ticket, bool $created): void
+    {
+        $values = ['ticket_notified_at' => gmdate('Y-m-d H:i:s', $this->now()), 'ticket_id' => $ticket];
+        if ($created) {
+            $values['notified_at'] = $values['ticket_notified_at'];
+        }
+        $this->Record->where('company_id', '=', $company)->where('field_id', '=', $field)->where('hash', '=', $hash)
+            ->update('council_sync_issues', $values);
+    }
+
+    public static function parseRelease(string $body): array
+    {
+        try {
+            $release = json_decode($body, true, 512, JSON_THROW_ON_ERROR);
+        } catch (JsonException $error) {
+            throw new CouncilSyncIssue('update', 'release_response');
+        }
+        if (
+            !is_array($release) || ($release['draft'] ?? null) !== false || ($release['prerelease'] ?? null) !== false
+            || !is_string($release['tag_name'] ?? null) || strlen($release['tag_name']) > 64
+            || !preg_match('~^v?((0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*))$~D', $release['tag_name'], $match)
+            || ($release['html_url'] ?? null) !== 'https://github.com/' . self::REPOSITORY . '/releases/tag/' . $release['tag_name']
+        ) {
+            throw new CouncilSyncIssue('update', 'release_response');
+        }
+        return ['version' => $match[1], 'url' => $release['html_url']];
+    }
+
+    public function versionStatus(int $company): array
+    {
+        $instances = $this->PluginManager->getByDir('council_sync', $company);
+        if (count($instances) !== 1 || !is_string($instances[0]->version ?? null)) {
+            throw new CouncilSyncIssue('settings', 'not_installed');
+        }
+        $installed = $instances[0]->version;
+        $package = self::packageVersion();
+        $cache = $this->Record->select()->from('council_sync_updates')->where('company_id', '=', $company)->fetch();
+        $latest = $cache ? $cache->latest_version : null;
+        $outdated = $latest !== null && (version_compare($package, $latest, '<') || version_compare($installed, $latest, '<'));
+        return [
+            'installed' => $installed, 'package' => $package, 'latest' => $latest,
+            'release_url' => $cache ? $cache->release_url : null,
+            'checked_at' => $cache ? $cache->checked_at : null,
+            'last_success_at' => $cache ? $cache->last_success_at : null,
+            'error_code' => $cache ? $cache->error_code : null,
+            'status' => !$cache ? 'unchecked' : ($cache->error_code !== null ? 'unavailable' : ($outdated ? 'outdated' : 'current')),
+            'outdated' => $outdated, 'upgrade_required' => $installed !== $package
+        ];
+    }
+
+    public function checkForUpdates(int $company, bool $manual = false): array
+    {
+        return $this->locked($company, function () use ($company, $manual) {
+            if (!$manual && !$this->settings($company)['updates_enabled']) {
+                return $this->versionStatus($company);
+            }
+            $old = $this->Record->select()->from('council_sync_updates')->where('company_id', '=', $company)->fetch();
+            $values = [
+                'checked_at' => gmdate('Y-m-d H:i:s', $this->now()),
+                'last_success_at' => $old ? $old->last_success_at : null,
+                'latest_version' => $old ? $old->latest_version : null,
+                'release_url' => $old ? $old->release_url : null, 'error_code' => null
+            ];
+            try {
+                $response = $this->updateRequest();
+                if ($response['status'] !== 200) {
+                    throw new CouncilSyncIssue('update', 'release_http', ['status' => $response['status']]);
+                }
+                $release = self::parseRelease($response['body']);
+                $values['latest_version'] = $release['version'];
+                $values['release_url'] = $release['url'];
+                $values['last_success_at'] = $values['checked_at'];
+            } catch (CouncilSyncIssue $error) {
+                $values['error_code'] = $error->reason === 'release_http' ? 'http_' . $error->details['status'] : $error->reason;
+                error_log('COUNCIL_SYNC_UPDATE_CHECK_FAILED company_id=' . $company . ' reason=' . $values['error_code']);
+            }
+            if ($old) {
+                $this->Record->where('company_id', '=', $company)->update('council_sync_updates', $values);
+            } else {
+                $this->Record->insert('council_sync_updates', ['company_id' => $company] + $values);
+            }
+            return $this->versionStatus($company);
+        });
     }
 
     public static function json(array $value): string
@@ -1012,19 +1210,62 @@ class CouncilSync extends CouncilSyncModel
         foreach (self::schema() as $sql) {
             $this->Record->query($sql);
         }
+        $this->upgradeNoticeColumns();
         $exists = $this->Record->select('company_id')->from('council_sync_settings')->where('company_id', '=', $company)->fetch();
         if (!$exists) {
             $this->Record->insert('council_sync_settings', [
                 'company_id' => $company, 'field_id' => null, 'staff_group_id' => null, 'department_id' => null,
-                'contact' => '', 'max_drop' => 10, 'frequency' => 1440, 'previous_count' => null, 'purge' => 0
+                'contact' => '', 'max_drop' => 10, 'frequency' => 1440, 'previous_count' => null, 'purge' => 0,
+                'email_enabled' => 1, 'ticket_enabled' => 1, 'updates_enabled' => 1
             ]);
+        }
+        $this->Record->query(
+            'UPDATE council_sync_issues SET'
+            . ' email_notified_at = CASE WHEN ticket_id IS NULL THEN notified_at ELSE NULL END,'
+            . ' ticket_notified_at = CASE WHEN ticket_id IS NOT NULL THEN notified_at ELSE NULL END'
+            . ' WHERE company_id = ? AND notified_at IS NOT NULL AND email_notified_at IS NULL AND ticket_notified_at IS NULL',
+            $company
+        );
+    }
+
+    private function upgradeNoticeColumns(): void
+    {
+        $definitions = [
+            'council_sync_settings' => [
+                'email_enabled' => 'TINYINT UNSIGNED NOT NULL DEFAULT 1',
+                'ticket_enabled' => 'TINYINT UNSIGNED NOT NULL DEFAULT 1',
+                'updates_enabled' => 'TINYINT UNSIGNED NOT NULL DEFAULT 1'
+            ],
+            'council_sync_issues' => [
+                'email_notified_at' => 'DATETIME NULL', 'ticket_notified_at' => 'DATETIME NULL',
+                'emailed_staff' => 'MEDIUMTEXT NULL'
+            ]
+        ];
+        foreach ($definitions as $table => $columns) {
+            $existing = $this->Record->query(
+                'SELECT COLUMN_NAME AS name, IS_NULLABLE AS nullable FROM information_schema.COLUMNS'
+                . ' WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?', $table
+            )->fetchAll(PDO::FETCH_OBJ);
+            $names = array_column($existing, 'name');
+            foreach ($columns as $column => $definition) {
+                if (!in_array($column, $names, true)) {
+                    $this->Record->query('ALTER TABLE `' . $table . '` ADD COLUMN `' . $column . '` ' . $definition);
+                }
+            }
+            if ($table === 'council_sync_issues') {
+                foreach ($existing as $column) {
+                    if ($column->name === 'notified_at' && $column->nullable === 'NO') {
+                        $this->Record->query('ALTER TABLE council_sync_issues MODIFY notified_at DATETIME NULL');
+                    }
+                }
+            }
         }
     }
 
     public function uninstallTables(int $company, bool $lastInstance): void
     {
         if ($lastInstance && $this->settings($company)['purge'] === 1) {
-            foreach (['council_sync_items', 'council_sync_batches', 'council_sync_issues', 'council_sync_settings'] as $table) {
+            foreach (['council_sync_items', 'council_sync_batches', 'council_sync_issues', 'council_sync_updates', 'council_sync_settings'] as $table) {
                 $this->Record->query('DROP TABLE `' . $table . '`');
             }
         }
@@ -1037,7 +1278,9 @@ class CouncilSync extends CouncilSyncModel
                 company_id INT UNSIGNED NOT NULL PRIMARY KEY, field_id INT UNSIGNED NULL,
                 staff_group_id INT UNSIGNED NULL, department_id INT UNSIGNED NULL, contact VARCHAR(255) NOT NULL,
                 max_drop TINYINT UNSIGNED NOT NULL DEFAULT 10, frequency INT UNSIGNED NOT NULL DEFAULT 1440,
-                previous_count INT UNSIGNED NULL, purge TINYINT UNSIGNED NOT NULL DEFAULT 0
+                previous_count INT UNSIGNED NULL, purge TINYINT UNSIGNED NOT NULL DEFAULT 0,
+                email_enabled TINYINT UNSIGNED NOT NULL DEFAULT 1, ticket_enabled TINYINT UNSIGNED NOT NULL DEFAULT 1,
+                updates_enabled TINYINT UNSIGNED NOT NULL DEFAULT 1
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
             "CREATE TABLE IF NOT EXISTS council_sync_batches (
                 id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY, company_id INT UNSIGNED NOT NULL,
@@ -1055,8 +1298,13 @@ class CouncilSync extends CouncilSyncModel
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
             "CREATE TABLE IF NOT EXISTS council_sync_issues (
                 company_id INT UNSIGNED NOT NULL, field_id INT UNSIGNED NOT NULL, hash CHAR(64) NOT NULL,
-                kind VARCHAR(32) NOT NULL, ticket_id BIGINT UNSIGNED NULL, notified_at DATETIME NOT NULL,
+                kind VARCHAR(32) NOT NULL, ticket_id BIGINT UNSIGNED NULL, notified_at DATETIME NULL,
+                email_notified_at DATETIME NULL, ticket_notified_at DATETIME NULL, emailed_staff MEDIUMTEXT NULL,
                 PRIMARY KEY (company_id,field_id,hash)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+            "CREATE TABLE IF NOT EXISTS council_sync_updates (
+                company_id INT UNSIGNED NOT NULL PRIMARY KEY, checked_at DATETIME NOT NULL,
+                last_success_at DATETIME NULL, latest_version VARCHAR(64) NULL, release_url TEXT NULL, error_code VARCHAR(64) NULL
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
         ];
     }

@@ -1,12 +1,18 @@
-<?php require __DIR__ . DIRECTORY_SEPARATOR . 'software_banner.pdt'; ?>
-<div class="card">
-    <div class="card-header"><h1 class="h4"><?php $this->_('AdminSoftware.title'); ?></h1></div>
-    <div class="card-body">
+<div class="main-content-padding">
+<?php
+echo ($message ?? '');
+require __DIR__ . DIRECTORY_SEPARATOR . 'software_banner.pdt';
+$this->Widget->clear();
+$this->Widget->setLinks([
+    ['name' => $this->_('AdminMain.settings', true), 'attributes' => ['href' => $sync_uri]],
+    ['name' => $this->_('AdminSoftware.title', true), 'current' => true, 'attributes' => ['href' => $software_uri]]
+]);
+$this->Widget->create($this->_('AdminSoftware.title', true), ['id' => 'council-sync-software']);
+?>
         <p class="alert alert-warning"><?php $this->_('AdminSoftware.global_warning'); ?></p>
         <?php if (!$install_supported) { ?>
             <p class="alert alert-warning"><?php $this->_('AdminSoftware.platform_requirement'); ?></p>
         <?php } ?>
-        <a href="<?php echo $this->Html->safe($sync_uri); ?>"><?php $this->_('AdminMain.settings'); ?></a>
         <p><?php $this->_('AdminSoftware.versions'); ?>
             <?php echo $this->Html->safe($version_status['installed'] . ' / ' . $version_status['package']
                 . ' / ' . ($version_status['latest'] ?? $this->_('AdminMain.unknown', true))); ?>
@@ -56,5 +62,5 @@
                 <p class="mt-3"><?php $this->_('AdminSoftware.install_unavailable'); ?></p>
             <?php } ?>
         <?php } ?>
-    </div>
+<?php $this->Widget->end(); ?>
 </div>

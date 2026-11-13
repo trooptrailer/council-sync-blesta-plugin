@@ -7,6 +7,7 @@ class AdminSoftware extends CouncilSyncController
         parent::preAction();
         $this->uses(['CouncilSync.CouncilSyncSoftware', 'CouncilSync.CouncilSync']);
         Language::loadLang('admin_software', null, dirname(__DIR__) . DIRECTORY_SEPARATOR . 'language' . DIRECTORY_SEPARATOR);
+        $this->structure->set('page_title', Language::_('AdminSoftware.title', true));
         if (!$this->CouncilSyncSoftware->authorized($this->syncStaff, $this->syncCompany)) {
             throw new CouncilSyncIssue('software', 'software_permission');
         }

@@ -1,16 +1,20 @@
-<div class="card">
-    <div class="card-header"><h2><?php $this->_('AdminMain.history'); ?></h2></div>
-    <div class="card-body">
-        <nav class="d-flex gap-2 mb-3">
-            <a class="btn btn-outline-secondary" href="<?php echo $this->Html->safe($sync_uri . 'index/'); ?>"><?php $this->_('AdminMain.settings'); ?></a>
-            <a class="btn btn-outline-secondary" href="<?php echo $this->Html->safe($sync_uri . 'resolve/'); ?>"><?php $this->_('AdminMain.resolve'); ?></a>
-        </nav>
+<div class="main-content-padding">
+<?php
+echo ($message ?? '');
+$this->Widget->clear();
+$this->Widget->setTabs([
+    ['name' => $this->_('AdminMain.settings', true), 'attributes' => ['href' => $sync_uri . 'index/']],
+    ['name' => $this->_('AdminMain.resolve', true), 'attributes' => ['href' => $sync_uri . 'resolve/']],
+    ['name' => $this->_('AdminMain.history', true), 'current' => true, 'attributes' => ['href' => $sync_uri . 'history/']]
+]);
+$this->Widget->create($this->_('AdminMain.history', true), ['id' => 'council-sync-history']);
+?>
         <p><?php $this->_('AdminMain.history_help'); ?></p>
         <?php if (!$batches) { ?>
             <p><?php $this->_('AdminMain.empty_history'); ?></p>
         <?php } else { ?>
             <div class="table-responsive">
-                <table class="table">
+                <table class="table table-hover align-middle">
                     <thead><tr>
                         <?php foreach (['batch', 'date', 'field', 'source', 'kind', 'status', 'summary', 'action'] as $column) { ?>
                             <th><?php $this->_('AdminMain.' . $column); ?></th>
@@ -63,7 +67,7 @@
             <?php } ?>
             <h4><?php $this->_('AdminMain.items'); ?></h4>
             <div class="table-responsive">
-                <table class="table">
+                <table class="table table-hover align-middle">
                     <thead><tr><th><?php $this->_('AdminMain.client'); ?></th><th><?php $this->_('AdminMain.old_value'); ?></th><th><?php $this->_('AdminMain.new'); ?></th><th><?php $this->_('AdminMain.action'); ?></th></tr></thead>
                     <tbody>
                     <?php foreach ($items as $item) { ?>
@@ -78,5 +82,5 @@
                 </table>
             </div>
         <?php } ?>
-    </div>
+<?php $this->Widget->end(); ?>
 </div>

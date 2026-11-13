@@ -1,14 +1,20 @@
-<?php require __DIR__ . DIRECTORY_SEPARATOR . 'software_banner.pdt'; ?>
-<div class="card">
-    <div class="card-header"><h2><?php $this->_('AdminMain.title'); ?></h2></div>
-    <div class="card-body">
-        <nav class="d-flex gap-2 mb-4">
-            <?php if ($software_allowed ?? false) { ?>
-                <a class="btn btn-outline-secondary" href="<?php echo $this->Html->safe($software_uri); ?>"><?php $this->_('AdminSoftware.title'); ?></a>
-            <?php } ?>
-            <a class="btn btn-outline-secondary" href="<?php echo $this->Html->safe($sync_uri . 'resolve/'); ?>"><?php $this->_('AdminMain.resolve'); ?></a>
-            <a class="btn btn-outline-secondary" href="<?php echo $this->Html->safe($sync_uri . 'history/'); ?>"><?php $this->_('AdminMain.history'); ?></a>
-        </nav>
+<div class="main-content-padding">
+<?php
+echo ($message ?? '');
+require __DIR__ . DIRECTORY_SEPARATOR . 'software_banner.pdt';
+$this->Widget->clear();
+$this->Widget->setTabs([
+    ['name' => $this->_('AdminMain.settings', true), 'current' => true, 'attributes' => ['href' => $sync_uri . 'index/']],
+    ['name' => $this->_('AdminMain.resolve', true), 'attributes' => ['href' => $sync_uri . 'resolve/']],
+    ['name' => $this->_('AdminMain.history', true), 'attributes' => ['href' => $sync_uri . 'history/']]
+]);
+if ($software_allowed ?? false) {
+    $this->Widget->setLinkButtons([
+        ['name' => $this->_('AdminSoftware.title', true), 'attributes' => ['href' => $software_uri]]
+    ]);
+}
+$this->Widget->create($this->_('AdminMain.title', true), ['id' => 'council-sync-settings']);
+?>
         <section class="border rounded p-3 mb-4">
             <h3 class="h5"><?php $this->_('AdminMain.versions'); ?></h3>
             <dl>
@@ -116,5 +122,5 @@
         <?php $this->Form->create($sync_uri . 'update/'); ?>
         <button class="btn btn-primary" type="submit"><?php $this->_('AdminMain.update'); ?></button>
         <?php $this->Form->end(); ?>
-    </div>
+<?php $this->Widget->end(); ?>
 </div>

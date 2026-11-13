@@ -17,6 +17,7 @@ explicit remapping, notifications and an audit history.
 - Supports whole-council and per-client remapping, with transactional history and rollback.
 - Provides independently configurable staff email, Support Manager tickets and release checks.
 - Offers explicit software installation with private backups and a configurable, 48-hour rollback trial.
+- Uses Blesta's native staff widgets, navigation tabs and form styling, without bundling a separate theme.
 
 ## Requirements
 
@@ -295,13 +296,27 @@ the fixtures create and drop random test databases. Other tests still use SQLite
 Windows fixtures bypass the production installer's POSIX guard; file-permission
 behavior must be tested on a POSIX filesystem.
 
-The latest 2026-11-13 run passed **99 tests and 23 syntax checks** on Linux,
+The latest 2026-11-13 run passed **100 tests and 23 syntax checks** on Linux,
 PHP 8.3.36 and SQLite with read-only source mounts and networking disabled.
-The 13 added cases cover encoded/raw markup, controls, UTF-8, exact size/count
+The sanitation cases cover encoded/raw markup, controls, UTF-8, exact size/count
 boundaries, safe punctuation, staged-preview validation, no-change failures and
-payload-free notifications. Separately, one fetched public API response produced
+payload-free notifications. The view regression also checks all five management
+screens use the staff widget helper and display Blesta's framework feedback.
+Separately, one fetched public API response produced
 the same 240 labels/slugs and output digest before and after validation changes.
 That comparison is not a live Blesta or hosting-account integration test.
+
+An actual local Blesta 6.0.4 installation was attempted from the vendor ZIP on
+Apache/PHP 8.3.36, ionCube 15.5.1 and MySQL 8.4.13. Database installation completed,
+but license activation was rejected and no licensed staff session was obtained.
+Consequently, native plugin installation, UI appearance, ACLs, encryption and
+Support Manager behavior are still unverified. A ZIP alone is not sufficient:
+integration testing needs a license accepted for the test hostname.
+
+The management pages now use Blesta's `Widget` helper for their shell/navigation
+and its existing Bootstrap controls and messages. Colors, fonts and dark/light
+presentation are inherited, not overridden by plugin styles. Actual visual
+confirmation remains part of licensed integration testing.
 
 The earlier 1.2.0 updater run passed **86 tests and 23 syntax checks** in each of four
 configurations: PHP 8.3.36 on Windows/Linux with SQLite or MySQL-backed updater

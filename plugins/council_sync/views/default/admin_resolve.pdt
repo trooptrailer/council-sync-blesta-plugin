@@ -1,11 +1,15 @@
-<div class="card">
-    <div class="card-header"><h2><?php $this->_('AdminMain.resolve'); ?></h2></div>
-    <div class="card-body">
+<div class="main-content-padding">
+<?php
+echo ($message ?? '');
+$this->Widget->clear();
+$this->Widget->setTabs([
+    ['name' => $this->_('AdminMain.settings', true), 'attributes' => ['href' => $sync_uri . 'index/']],
+    ['name' => $this->_('AdminMain.resolve', true), 'current' => true, 'attributes' => ['href' => $sync_uri . 'resolve/']],
+    ['name' => $this->_('AdminMain.history', true), 'attributes' => ['href' => $sync_uri . 'history/']]
+]);
+$this->Widget->create($this->_('AdminMain.resolve', true), ['id' => 'council-sync-resolution']);
+?>
         <p class="alert alert-info"><?php $this->_('AdminMain.resolve_help'); ?></p>
-        <nav class="d-flex gap-2 mb-3">
-            <a class="btn btn-outline-secondary" href="<?php echo $this->Html->safe($sync_uri . 'index/'); ?>"><?php $this->_('AdminMain.settings'); ?></a>
-            <a class="btn btn-outline-secondary" href="<?php echo $this->Html->safe($sync_uri . 'history/'); ?>"><?php $this->_('AdminMain.history'); ?></a>
-        </nav>
         <?php if (!$preview['conflicts']) { ?>
             <p><?php $this->_('AdminMain.no_conflicts'); ?></p>
         <?php } ?>
@@ -94,5 +98,5 @@
         <button class="btn btn-danger" type="submit" name="confirm_apply" value="1"><?php $this->_('AdminMain.confirm'); ?></button>
         <button class="btn btn-outline-secondary" type="submit" name="refresh" value="1" formnovalidate><?php $this->_('AdminMain.refresh'); ?></button>
         <?php $this->Form->end(); ?>
-    </div>
+<?php $this->Widget->end(); ?>
 </div>

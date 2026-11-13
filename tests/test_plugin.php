@@ -1022,12 +1022,36 @@ test('settings display reads cached versions without making a release request', 
     same([], Loader::$models['Emails']->sent);
 });
 
+class TestWidget
+{
+    private array $links = [];
+    public function clear(): void { $this->links = []; }
+    public function setTabs(array $links): void { $this->links = array_merge($this->links, $links); }
+    public function setLinks(array $links): void { $this->setTabs($links); }
+    public function setLinkButtons(array $links): void { $this->setTabs($links); }
+    public function create(string $title, array $attributes = []): void
+    {
+        echo '<section data-native-widget="' . htmlspecialchars($attributes['id'], ENT_QUOTES, 'UTF-8') . '">';
+        foreach ($this->links as $link) {
+            echo '<a href="' . htmlspecialchars($link['attributes']['href'], ENT_QUOTES, 'UTF-8') . '">'
+                . htmlspecialchars($link['name'], ENT_QUOTES, 'UTF-8') . '</a>';
+        }
+    }
+    public function end(): void { echo '</section>'; }
+}
+
 class TestRenderer
 {
     public string $base_uri = '/billing/admin/';
     public TestForm $Form;
     public TestHtml $Html;
-    public function __construct() { $this->Form = new TestForm(); $this->Html = new TestHtml(); }
+    public TestWidget $Widget;
+    public function __construct()
+    {
+        $this->Form = new TestForm();
+        $this->Html = new TestHtml();
+        $this->Widget = new TestWidget();
+    }
     public function _(string $key, bool $return = false): mixed { return Language::_($key, $return); }
     public function render(string $file, array $variables): string
     {
@@ -1042,6 +1066,27 @@ class TestRenderer
     }
 }
 
+test('all management screens use native staff widgets and show framework feedback', function () {
+    $model = database([]);
+    controller($model);
+    $message = '<div role="alert">Framework feedback</div>';
+    $variables = [
+        'message' => $message, 'sync_uri' => '/billing/admin/plugin/council_sync/admin_main/',
+        'software_uri' => '/billing/admin/plugin/council_sync/admin_software/', 'software_allowed' => true,
+        'settings' => $model->settings(1), 'fields' => [], 'groups' => [], 'support_active' => false,
+        'departments' => [], 'version_status' => $model->versionStatus(1), 'software_trial' => null,
+        'configuration' => ['backup_dir' => null, 'window_hours' => 48], 'install_supported' => true,
+        'preview' => ['conflicts' => [], 'changes' => ['added' => [], 'removed' => [], 'labels' => []]],
+        'nonce' => 'synthetic-preview', 'batches' => [], 'latest' => null, 'selected' => null, 'items' => [], 'page' => 1
+    ];
+    foreach (['admin_main', 'admin_resolve', 'admin_history', 'admin_software', 'admin_software_finish'] as $file) {
+        $variables['software_trial'] = $file === 'admin_software_finish' ? ['id' => str_repeat('a', 32)] : null;
+        $html = (new TestRenderer())->render($file, $variables);
+        same(1, substr_count($html, 'data-native-widget='));
+        same(1, substr_count($html, $message));
+    }
+});
+
 test('PDT forms use canonical action paths and escape all council and client output', function () {
     Language::loadLang('admin_main');
     $renderer = new TestRenderer();
@@ -1051,8 +1096,11 @@ test('PDT forms use canonical action paths and escape all council and client out
     $preview = $model->preview(1);
     $html = $renderer->render('admin_resolve', [
         'sync_uri' => $base, 'nonce' => 'synthetic-nonce', 'preview' => $preview,
-        'client_names' => [1 => '<img src=x onerror=alert(1)>']
+        'client_names' => [1 => '<img src=x onerror=alert(1)>'],
+        'message' => '<div role="alert">Framework validation message</div>'
     ]);
+    same(true, str_contains($html, '<div role="alert">Framework validation message</div>'));
+    same(true, str_contains($html, 'data-native-widget="council-sync-resolution"'));
     same(false, str_contains($html, '<script>old</script>'));
     same(false, str_contains($html, '<img src=x'));
     same(true, str_contains($html, 'name="choices[0][mode]"'));

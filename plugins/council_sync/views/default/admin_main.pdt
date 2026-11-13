@@ -1,7 +1,11 @@
+<?php require __DIR__ . DIRECTORY_SEPARATOR . 'software_banner.pdt'; ?>
 <div class="card">
     <div class="card-header"><h2><?php $this->_('AdminMain.title'); ?></h2></div>
     <div class="card-body">
         <nav class="d-flex gap-2 mb-4">
+            <?php if ($software_allowed ?? false) { ?>
+                <a class="btn btn-outline-secondary" href="<?php echo $this->Html->safe($software_uri); ?>"><?php $this->_('AdminSoftware.title'); ?></a>
+            <?php } ?>
             <a class="btn btn-outline-secondary" href="<?php echo $this->Html->safe($sync_uri . 'resolve/'); ?>"><?php $this->_('AdminMain.resolve'); ?></a>
             <a class="btn btn-outline-secondary" href="<?php echo $this->Html->safe($sync_uri . 'history/'); ?>"><?php $this->_('AdminMain.history'); ?></a>
         </nav>

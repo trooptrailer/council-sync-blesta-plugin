@@ -1,6 +1,7 @@
 <?php
 
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'council_sync_model.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'council_sync_software.php';
 
 class CouncilSyncIssue extends RuntimeException
 {
@@ -33,6 +34,10 @@ class CouncilSync extends CouncilSyncModel
     public const RELEASE_API = 'https://api.github.com/repos/' . self::REPOSITORY . '/releases/latest';
     public const REMINDER_SECONDS = 604800;
     private const MAX_RESPONSE_BYTES = 4194304;
+    private const MAX_WIKI_LINES = 20000;
+    private const MAX_COUNCILS = 1000;
+    private const MAX_CELL_BYTES = 8192;
+    private const MAX_OPTIONS_BYTES = 65535;
     private ?int $lockedCompany = null;
 
     public function __construct()
@@ -44,7 +49,13 @@ class CouncilSync extends CouncilSyncModel
 
     public static function parseWikitext(string $text): array
     {
-        $text = preg_replace(
+        if (strlen($text) > self::MAX_RESPONSE_BYTES || substr_count($text, "\n") > self::MAX_WIKI_LINES) {
+            self::rejectContent('page', 'size');
+        }
+        if (preg_match('//u', $text) !== 1) {
+            self::rejectContent('page', 'encoding');
+        }
+        $text = self::replaceWikitext(
             '~<!--.*?-->|<ref\b[^>]*?/>|<ref\b[^>]*>.*?</ref\s*>~is',
             '',
             str_replace("\r\n", "\n", $text)
@@ -108,24 +119,21 @@ class CouncilSync extends CouncilSyncModel
             if ($templates !== 0 || $links !== 0) {
                 throw new CouncilSyncIssue('fetch', 'parse');
             }
+            if (count($rows) > self::MAX_COUNCILS) {
+                self::rejectContent('rows', 'count');
+            }
             $councils = [];
-            foreach ($rows as $cells) {
+            $fields = ['number', 'name', 'city', 'state'];
+            foreach ($rows as $index => $cells) {
                 $values = [];
-                foreach ($positions as $position) {
+                foreach ($positions as $column => $position) {
                     if (!array_key_exists($position, $cells)) {
                         throw new CouncilSyncIssue('fetch', 'parse');
                     }
-                    $values[] = self::plainCell($cells[$position]);
+                    $field = $fields[$column];
+                    $values[$field] = self::plainCell($cells[$position], $field, $index + 1);
                 }
-                if (!ctype_digit($values[0]) || $values[1] === '' || $values[2] === '' || $values[3] === '') {
-                    throw new CouncilSyncIssue('fetch', 'parse');
-                }
-                $councils[] = [
-                    'number' => (string) (int) $values[0],
-                    'name' => $values[1],
-                    'city' => $values[2],
-                    'state' => $values[3]
-                ];
+                $councils[] = self::validatedCouncil($values, $index + 1);
             }
             if (!$councils) {
                 throw new CouncilSyncIssue('sanity', 'empty');
@@ -189,28 +197,143 @@ class CouncilSync extends CouncilSyncModel
         return $cells;
     }
 
-    private static function plainCell(string $cell): string
+    private static function rejectContent(string $field, string $problem, ?int $row = null): never
     {
+        $details = ['field' => $field, 'problem' => $problem];
+        if ($row !== null) {
+            $details['row'] = $row;
+        }
+        error_log('COUNCIL_SYNC_SOURCE_REJECTED field=' . $field . ' problem=' . $problem
+            . ($row === null ? '' : ' row=' . $row));
+        throw new CouncilSyncIssue('fetch', 'unsafe_content', $details);
+    }
+
+    private static function replaceWikitext(string $pattern, string $replacement, string $text): string
+    {
+        $result = preg_replace($pattern, $replacement, $text);
+        if ($result === null) {
+            throw new CouncilSyncIssue('fetch', 'parse');
+        }
+        return $result;
+    }
+
+    private static function plainCell(string $cell, string $field = 'header', ?int $row = null): string
+    {
+        if (strlen($cell) > self::MAX_CELL_BYTES) {
+            self::rejectContent($field, 'size', $row);
+        }
+        if (preg_match('~[\x00-\x08\x0B\x0C\x0E-\x1F\x{007F}-\x{009F}\p{Cf}]~u', $cell) !== 0) {
+            self::rejectContent($field, 'controls', $row);
+        }
         if (preg_match('~\b(?:rowspan|colspan)\s*=\s*["\']?[2-9]~i', $cell)) {
             throw new CouncilSyncIssue('fetch', 'parse');
         }
-        $cell = preg_replace('~^\s*(?:[\w:-]+\s*=\s*(?:"[^"]*"|\'[^\']*\'|[^\s|]+)\s*)+\|~', '', $cell);
-        $cell = preg_replace_callback('~\[\[([^\[\]]+)\]\]~', static function ($match) {
+        $cell = self::replaceWikitext('~^\s*(?:[\w:-]+\s*=\s*(?:"[^"]*"|\'[^\']*\'|[^\s|]+)\s*)+\|~', '', $cell);
+        $linked = preg_replace_callback('~\[\[([^\[\]]+)\]\]~', static function ($match) {
             $parts = explode('|', $match[1]);
             return end($parts);
         }, $cell);
-        $cell = preg_replace('~\[(?:https?://\S+)\s+([^\]]+)\]~', '$1', $cell);
-        $cell = preg_replace('~\{\{(?:nowrap|small|sort)\|(?:[^{}|]*\|)?([^{}]+)\}\}~i', '$1', $cell);
+        if ($linked === null) {
+            throw new CouncilSyncIssue('fetch', 'parse');
+        }
+        $cell = self::replaceWikitext('~\[(?:https?://\S+)\s+([^\]]+)\]~', '$1', $linked);
+        $cell = self::replaceWikitext('~\{\{(?:nowrap|small|sort)\|(?:[^{}|]*\|)?([^{}]+)\}\}~i', '$1', $cell);
         if (str_contains($cell, '{{') || str_contains($cell, '[[')) {
             throw new CouncilSyncIssue('fetch', 'parse');
         }
-        $cell = preg_replace('~<br\s*/?>~i', ' ', $cell);
-        $cell = html_entity_decode(strip_tags(str_replace(["'''", "''"], '', $cell)), ENT_QUOTES | ENT_HTML5, 'UTF-8');
-        return trim(preg_replace('~\s+~u', ' ', $cell));
+        $cell = self::replaceWikitext('~<br\s*/?>~i', ' ', $cell);
+        $cell = self::replaceWikitext('~\s+~u', ' ', str_replace(["'''", "''"], '', $cell));
+        $cell = html_entity_decode($cell, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        if (preg_match('~[\p{Cc}\p{Cf}]~u', $cell) !== 0) {
+            self::rejectContent($field, 'controls', $row);
+        }
+        return trim(self::replaceWikitext('~\p{Zs}+~u', ' ', $cell));
+    }
+
+    private static function plainText(string $text, string $field, ?int $row = null): string
+    {
+        $limit = match ($field) {
+            'state' => 64,
+            'label' => 250,
+            default => 200
+        };
+        if (strlen($text) > $limit * 4 || preg_match('//u', $text) !== 1) {
+            self::rejectContent($field, 'encoding_or_size', $row);
+        }
+        if (preg_match('~[\p{Cc}\p{Cf}]~u', $text) !== 0) {
+            self::rejectContent($field, 'controls', $row);
+        }
+        if (preg_match('~&(?:amp|lt|gt|quot|apos)~i', $text) !== 0) {
+            self::rejectContent($field, 'encoding', $row);
+        }
+        $text = trim(self::replaceWikitext('~\p{Zs}+~u', ' ', $text));
+        if (
+            preg_match('~\A[\p{L}\p{M}\p{N} .,\x{0027}\x{0022}&()/\x{2010}-\x{2015}\x{2018}\x{2019}\x{201C}\x{201D}-]{1,'
+                . $limit . '}\z~uD', $text) !== 1
+            || preg_match('~\p{L}~u', $text) !== 1
+        ) {
+            self::rejectContent($field, 'text', $row);
+        }
+        return $text;
+    }
+
+    private static function validatedCouncil(mixed $row, int $index): array
+    {
+        if (!is_array($row)) {
+            throw new CouncilSyncIssue('fetch', 'parse');
+        }
+        foreach (['number', 'name', 'city', 'state'] as $field) {
+            if (!isset($row[$field]) || $row[$field] === '' || ($field !== 'number' && !is_string($row[$field]))) {
+                throw new CouncilSyncIssue('fetch', 'parse');
+            }
+        }
+        if (
+            (!is_string($row['number']) && !is_int($row['number']))
+            || preg_match('~\A[0-9]{1,4}\z~D', (string) $row['number']) !== 1 || (int) $row['number'] < 1
+        ) {
+            self::rejectContent('number', 'range', $index);
+        }
+        return [
+            'number' => (string) (int) $row['number'],
+            'name' => self::plainText($row['name'], 'name', $index),
+            'city' => self::plainText($row['city'], 'city', $index),
+            'state' => self::plainText($row['state'], 'state', $index)
+        ];
+    }
+
+    private static function validateImportedOptions(array $options): void
+    {
+        if (!$options) {
+            throw new CouncilSyncIssue('sanity', 'empty');
+        }
+        if (count($options) > self::MAX_COUNCILS) {
+            self::rejectContent('options', 'count');
+        }
+        $index = 0;
+        foreach ($options as $value => $label) {
+            $index++;
+            if (strlen((string) $value) > 240 || preg_match('~\A[a-z0-9]+(?:-[a-z0-9]+)*\z~D', (string) $value) !== 1) {
+                self::rejectContent('value', 'slug', $index);
+            }
+            if (!is_string($label)) {
+                self::rejectContent('label', 'type', $index);
+            }
+            if (self::plainText($label, 'label', $index) !== $label) {
+                self::rejectContent('label', 'normalization', $index);
+            }
+        }
+        $values = array_flip($options);
+        if (count($values) !== count($options)) {
+            throw new CouncilSyncIssue('collision', 'collision');
+        }
+        if (strlen(json_encode($values, JSON_THROW_ON_ERROR)) > self::MAX_OPTIONS_BYTES) {
+            self::rejectContent('options', 'serialized_size');
+        }
     }
 
     public static function stateAbbreviation(string $state): string
     {
+        $state = self::plainText($state, 'state');
         $states = [
             'Alabama' => 'AL', 'Alaska' => 'AK', 'Arizona' => 'AZ', 'Arkansas' => 'AR',
             'California' => 'CA', 'Colorado' => 'CO', 'Connecticut' => 'CT', 'Delaware' => 'DE',
@@ -241,19 +364,17 @@ class CouncilSync extends CouncilSyncModel
                 return $country;
             }
         }
-        throw new CouncilSyncIssue('fetch', 'state_unknown', ['state' => $state]);
+        throw new CouncilSyncIssue('fetch', 'state_unknown', ['field' => 'state']);
     }
 
     public static function generateOptions(array $rows): array
     {
-        foreach ($rows as $row) {
-            if (
-                !isset($row['name'], $row['number'], $row['state'])
-                || !is_string($row['name']) || trim($row['name']) === ''
-                || !ctype_digit((string) $row['number']) || !is_string($row['state'])
-            ) {
-                throw new CouncilSyncIssue('fetch', 'parse');
-            }
+        if (count($rows) > self::MAX_COUNCILS) {
+            self::rejectContent('rows', 'count');
+        }
+        $rows = array_values($rows);
+        foreach ($rows as $index => $row) {
+            $rows[$index] = self::validatedCouncil($row, $index + 1);
         }
         usort($rows, static fn($a, $b) => strcasecmp($a['name'], $b['name']) ?: (int) $a['number'] <=> (int) $b['number']);
         $options = [];
@@ -276,9 +397,7 @@ class CouncilSync extends CouncilSyncModel
             sort($values, SORT_STRING);
             throw new CouncilSyncIssue('collision', 'collision', ['values' => $values]);
         }
-        if (!$options) {
-            throw new CouncilSyncIssue('sanity', 'empty');
-        }
+        self::validateImportedOptions($options);
         return $options;
     }
 
@@ -428,6 +547,40 @@ class CouncilSync extends CouncilSyncModel
         );
     }
 
+    public function softwareRelease(): array
+    {
+        $response = $this->updateRequest();
+        if ($response['status'] !== 200) {
+            throw new CouncilSyncIssue('software', 'software_download');
+        }
+        $release = self::parseRelease($response['body']);
+        $tag = substr($release['url'], strlen('https://github.com/' . self::REPOSITORY . '/releases/tag/'));
+        $path = 'git/ref/tags/' . rawurlencode($tag);
+        for ($depth = 0; $depth < 5; $depth++) {
+            $response = $this->httpGet(
+                'https://api.github.com/repos/' . self::REPOSITORY . '/' . $path,
+                'CouncilSync-Blesta/' . self::packageVersion(), 65536,
+                ['Accept: application/vnd.github+json', 'X-GitHub-Api-Version: 2026-03-10']
+            );
+            if ($response['status'] !== 200) {
+                throw new CouncilSyncIssue('software', 'software_download');
+            }
+            $data = json_decode($response['body'], true, 512, JSON_THROW_ON_ERROR);
+            $object = $data['object'] ?? null;
+            if (!is_array($object) || !is_string($object['sha'] ?? null) || !preg_match('~^[a-f0-9]{40}$~D', $object['sha'])) {
+                throw new CouncilSyncIssue('software', 'software_download');
+            }
+            if (($object['type'] ?? null) === 'commit') {
+                return $release + ['commit' => $object['sha']];
+            }
+            if (($object['type'] ?? null) !== 'tag') {
+                break;
+            }
+            $path = 'git/tags/' . $object['sha'];
+        }
+        throw new CouncilSyncIssue('software', 'software_download');
+    }
+
     protected function httpGet(string $url, string $agent, int $limit, array $headers = ['Accept: application/json']): array
     {
         if (!extension_loaded('curl')) {
@@ -483,7 +636,7 @@ class CouncilSync extends CouncilSyncModel
         }
         if (
             !is_array($data) || isset($data['error']) || !isset($data['parse']['wikitext'], $data['parse']['title'])
-            || !is_string($data['parse']['wikitext'])
+            || !is_string($data['parse']['wikitext']) || !is_string($data['parse']['title'])
             || str_replace(' ', '_', $data['parse']['title']) !== self::PAGE
         ) {
             throw new CouncilSyncIssue('fetch', 'response');
@@ -630,21 +783,23 @@ class CouncilSync extends CouncilSyncModel
             }
             return $operation();
         }
-        $name = 'council_sync:' . $company;
-        $result = $this->Record->query('SELECT GET_LOCK(?, 0) AS acquired', $name)->fetch(PDO::FETCH_OBJ);
-        if (!$result || (int) $result->acquired !== 1) {
-            throw new CouncilSyncIssue('storage', 'busy');
-        }
-        $this->lockedCompany = $company;
-        try {
-            return $operation();
-        } finally {
-            $this->lockedCompany = null;
-            $released = $this->Record->query('SELECT RELEASE_LOCK(?) AS released', $name)->fetch(PDO::FETCH_OBJ);
-            if (!$released || (int) $released->released !== 1) {
-                error_log('COUNCIL_SYNC_LOCK_RELEASE_FAILED company_id=' . $company);
+        return CouncilSyncSoftware::guard($this->Record, function () use ($company, $operation) {
+            $name = CouncilSyncSoftware::lockBase($this->Record) . ':' . $company;
+            $result = $this->Record->query('SELECT GET_LOCK(?, 0) AS acquired', $name)->fetch(PDO::FETCH_OBJ);
+            if (!$result || (int) $result->acquired !== 1) {
+                throw new CouncilSyncIssue('storage', 'busy');
             }
-        }
+            $this->lockedCompany = $company;
+            try {
+                return $operation();
+            } finally {
+                $this->lockedCompany = null;
+                $released = $this->Record->query('SELECT RELEASE_LOCK(?) AS released', $name)->fetch(PDO::FETCH_OBJ);
+                if (!$released || (int) $released->released !== 1) {
+                    error_log('COUNCIL_SYNC_LOCK_RELEASE_FAILED company_id=' . $company);
+                }
+            }
+        });
     }
 
     public function atomic(callable $operation): mixed
@@ -800,6 +955,7 @@ class CouncilSync extends CouncilSyncModel
         ) {
             throw new CouncilSyncIssue('storage', 'stale');
         }
+        self::validateImportedOptions($preview['after']);
         return $this->locked($company, function () use ($company, $preview, $choices, $source, $staff, $dryRun) {
             return $this->atomic(function () use ($company, $preview, $choices, $source, $staff, $dryRun) {
                 $state = $this->readState($company, $preview['field_id'], true);
@@ -1207,6 +1363,7 @@ class CouncilSync extends CouncilSyncModel
 
     public function installTables(int $company): void
     {
+        CouncilSyncSoftware::installControl($this->Record);
         foreach (self::schema() as $sql) {
             $this->Record->query($sql);
         }
@@ -1265,7 +1422,7 @@ class CouncilSync extends CouncilSyncModel
     public function uninstallTables(int $company, bool $lastInstance): void
     {
         if ($lastInstance && $this->settings($company)['purge'] === 1) {
-            foreach (['council_sync_items', 'council_sync_batches', 'council_sync_issues', 'council_sync_updates', 'council_sync_settings'] as $table) {
+            foreach (['council_sync_items', 'council_sync_batches', 'council_sync_issues', 'council_sync_updates', 'council_sync_settings', 'council_sync_software'] as $table) {
                 $this->Record->query('DROP TABLE `' . $table . '`');
             }
         }
@@ -1278,7 +1435,7 @@ class CouncilSync extends CouncilSyncModel
                 company_id INT UNSIGNED NOT NULL PRIMARY KEY, field_id INT UNSIGNED NULL,
                 staff_group_id INT UNSIGNED NULL, department_id INT UNSIGNED NULL, contact VARCHAR(255) NOT NULL,
                 max_drop TINYINT UNSIGNED NOT NULL DEFAULT 10, frequency INT UNSIGNED NOT NULL DEFAULT 1440,
-                previous_count INT UNSIGNED NULL, purge TINYINT UNSIGNED NOT NULL DEFAULT 0,
+                previous_count INT UNSIGNED NULL, `purge` TINYINT UNSIGNED NOT NULL DEFAULT 0,
                 email_enabled TINYINT UNSIGNED NOT NULL DEFAULT 1, ticket_enabled TINYINT UNSIGNED NOT NULL DEFAULT 1,
                 updates_enabled TINYINT UNSIGNED NOT NULL DEFAULT 1
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",

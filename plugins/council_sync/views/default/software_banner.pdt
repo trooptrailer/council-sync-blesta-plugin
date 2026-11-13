@@ -1,0 +1,89 @@
+<?php if (!empty($software_trial)) { ?>
+<section class="alert alert-warning" role="status" id="council-software-banner">
+    <h2 class="h5"><?php $this->_('AdminSoftware.trial'); ?></h2>
+    <p><?php echo $this->Html->safe($software_trial['from'] . ' -> ' . $software_trial['to']); ?>:
+        <?php echo $this->Html->safe($software_trial['phase']); ?>
+    </p>
+    <?php if ($software_trial['remaining'] !== null) { ?>
+        <p><?php $this->_('AdminSoftware.remaining'); ?>
+            <strong id="council-software-clock" aria-live="off" data-seconds="<?php echo $this->Html->safe($software_trial['remaining']); ?>"><?php echo $this->Html->safe(
+                intdiv($software_trial['remaining'], 3600) . 'h ' . intdiv($software_trial['remaining'] % 3600, 60) . 'm'
+            ); ?></strong>
+        </p>
+        <script>
+        (function () {
+            var clock = document.getElementById('council-software-clock');
+            var start = performance.now(), seconds = Number(clock.dataset.seconds);
+            function tick() {
+                var left = Math.max(0, seconds - Math.floor((performance.now() - start) / 1000));
+                clock.textContent = Math.floor(left / 3600) + 'h ' + Math.floor(left % 3600 / 60) + 'm ' + left % 60 + 's';
+            }
+            tick();
+            window.setInterval(tick, 1000);
+        }());
+        </script>
+        <?php if ($software_trial['remaining'] === 0) { ?>
+            <p><?php $this->_('AdminSoftware.expired'); ?></p>
+        <?php } ?>
+    <?php } else { ?>
+        <p><?php $this->_('AdminSoftware.incomplete'); ?></p>
+    <?php } ?>
+    <?php if (!empty($software_trial['error'])) { ?>
+        <p><?php echo $this->Html->safe(Language::_('CouncilSync.!error.' . $software_trial['error'], true)); ?></p>
+    <?php } ?>
+    <?php if ($software_allowed ?? false) { ?>
+        <?php if ($software_trial['can_finish']) { ?>
+            <a class="btn btn-primary" href="<?php echo $this->Html->safe($software_uri . 'finish/'); ?>"><?php $this->_('AdminSoftware.finish'); ?></a>
+        <?php } ?>
+        <?php if (in_array($software_trial['phase'], ['trial', 'failed', 'preparing', 'files_ready'], true)
+            && ($software_trial['remaining'] === null || $software_trial['remaining'] > 0)) { ?>
+            <?php $this->Form->create($software_uri . 'rollback/'); ?>
+            <?php $this->Form->fieldHidden('id', $software_trial['id']); ?>
+            <label class="form-check">
+                <?php $this->Form->fieldRadio('mode', 'preserve', false, ['class' => 'form-check-input'] + ($software_trial['can_preserve'] ? [] : ['disabled' => 'disabled'])); ?>
+                <span><?php $this->_('AdminSoftware.preserve'); ?></span>
+            </label>
+            <?php if (!$software_trial['can_preserve']) { ?>
+                <p><?php $this->_('AdminSoftware.preserve_unavailable'); ?></p>
+            <?php } ?>
+            <label class="form-check">
+                <?php $this->Form->fieldRadio('mode', 'restore', false, ['class' => 'form-check-input', 'required' => 'required']); ?>
+                <span><?php $this->_('AdminSoftware.restore'); ?></span>
+            </label>
+            <label class="form-check text-danger">
+                <?php $this->Form->fieldCheckbox('confirm_data_loss', '1', false, ['class' => 'form-check-input']); ?>
+                <span><?php $this->_('AdminSoftware.data_loss'); ?></span>
+            </label>
+            <label class="form-check">
+                <?php $this->Form->fieldCheckbox('confirm_rollback', '1', false, ['class' => 'form-check-input', 'required' => 'required']); ?>
+                <span><?php $this->_('AdminSoftware.rollback_confirm'); ?></span>
+            </label>
+            <button type="submit" class="btn btn-danger mt-2"><?php $this->_('AdminSoftware.rollback'); ?></button>
+            <?php $this->Form->end(); ?>
+        <?php } ?>
+        <?php $this->Form->create($software_uri . 'commit/'); ?>
+        <?php $this->Form->fieldHidden('id', $software_trial['id']); ?>
+        <label class="form-check">
+            <?php $this->Form->fieldCheckbox('confirm_commit', '1', false, ['class' => 'form-check-input', 'required' => 'required']); ?>
+            <span><?php $this->_('AdminSoftware.commit_confirm'); ?></span>
+        </label>
+        <button type="submit" class="btn btn-primary mt-2"><?php $this->_('AdminSoftware.commit'); ?></button>
+        <?php $this->Form->end(); ?>
+    <?php } else { ?>
+        <p><?php $this->_('AdminSoftware.permission_required'); ?></p>
+    <?php } ?>
+    <script>
+    (function () {
+        var banner = document.getElementById('council-software-banner');
+        var restore = banner.querySelector('input[name="mode"][value="restore"]');
+        var confirm = banner.querySelector('input[name="confirm_data_loss"]');
+        if (!restore || !confirm) return;
+        function requireConfirmation() { confirm.required = restore.checked; }
+        banner.querySelectorAll('input[name="mode"]').forEach(function (radio) {
+            radio.addEventListener('change', requireConfirmation);
+        });
+        requireConfirmation();
+    }());
+    </script>
+</section>
+<?php } ?>

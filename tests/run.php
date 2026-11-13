@@ -28,6 +28,158 @@ test('malformed required row aborts rather than skipping a council', function ()
     $broken = preg_replace('~\}\}~', '', wiki([council('A', 1), council('B', 2)]), 1);
     issue('parse', fn() => CouncilSync::parseWikitext($broken));
 });
+test('safe Wiki formatting and entities preserve plain labels and established slugs', function () {
+    $rows = [
+        council("'''Patriots&#39; Path Council'''", 358, 'New&nbsp;Jersey'),
+        council('{{nowrap|A&amp;M<br />Council}}', 2),
+        council("[[Untrusted destination|R\u{00ED}o Grande &amp; St. Anne-S\u{00E3}o Council]]", 3)
+    ];
+    $rows[2]['city'] = "[[Ignored link|S\u{00E3}o Jos\u{00E9}]]";
+    $options = CouncilSync::generateOptions(CouncilSync::parseWikitext(wiki($rows)));
+    same("Patriots' Path Council, NJ (358)", $options['patriots-path-council-nj-358']);
+    same('A&M Council, TX (2)', $options['a-m-council-tx-2']);
+    same("R\u{00ED}o Grande & St. Anne-S\u{00E3}o Council, TX (3)", $options['r-o-grande-st-anne-s-o-council-tx-3']);
+    $page = str_replace('Council number', 'Council&nbsp;number', wiki($rows));
+    same($options, CouncilSync::generateOptions(CouncilSync::parseWikitext($page)));
+    same(CouncilSync::generateOptions([council('A', 1)]), CouncilSync::generateOptions(['first' => council('A', 1)]));
+});
+test('raw and encoded active content is rejected in every imported text column', function () {
+    foreach ([
+        '<script>COUNCIL_ATTACK_MARKER</script>', '<img src=x onerror=alert(1)>',
+        '<br onmouseover=alert(1)>', '<svg/onload=alert(1)>', '<script',
+        '&lt;script&gt;COUNCIL_ATTACK_MARKER&lt;/script&gt;',
+        '&#60;img src=x onerror=alert(1)&#62;',
+        '&amp;lt;img src=x onerror=alert(1)&amp;gt;',
+        '&ltscript&gtalert(1)&lt/script&gt',
+        '%3Cscript%3E', 'javascript:alert(1)', '${template}', '`command`',
+        "Robert'); DROP TABLE clients;--"
+    ] as $payload) {
+        foreach (['name', 'city', 'state'] as $field) {
+            $row = council('Safe Council', 1);
+            $row[$field] = $payload;
+            issue('unsafe_content', fn() => CouncilSync::parseWikitext(wiki([$row])));
+        }
+    }
+});
+test('malformed UTF-8 and raw or entity-encoded controls cannot be normalized away', function () {
+    foreach (["Bad\xC3\x28", "Bad\0Name", "Bad\x1BName", "Bad\x0BName", "Bad\u{202E}Name", "Bad\u{200B}Name",
+        'Bad&#0;Name', 'Bad&#10;Name', 'Bad&#x1b;Name', 'Bad&Tab;Name', 'Bad&NewLine;Name'] as $payload) {
+        $row = council($payload, 1);
+        issue('unsafe_content', fn() => CouncilSync::parseWikitext(wiki([$row])));
+        issue('unsafe_content', fn() => CouncilSync::generateOptions([$row]));
+    }
+});
+test('council numbers are bounded ASCII digits before integer conversion', function () {
+    foreach (['0', '-1', '10000', '999999999999999999999999', '1e3', '1.5', "\u{0661}", '1 OR 1=1'] as $number) {
+        $row = council('Safe Council', 1);
+        $row['number'] = $number;
+        issue('unsafe_content', fn() => CouncilSync::parseWikitext(wiki([$row])));
+        issue('unsafe_content', fn() => CouncilSync::generateOptions([$row]));
+    }
+    $first = council('First Council', 1);
+    $first['number'] = '0001';
+    $options = CouncilSync::generateOptions(CouncilSync::parseWikitext(wiki([$first, council('Last Council', 9999)])));
+    same('First Council, TX (1)', $options['first-council-tx-1']);
+    same('Last Council, TX (9999)', $options['last-council-tx-9999']);
+});
+test('field lengths and raw cell sizes are checked at their boundaries', function () {
+    foreach (['name', 'city'] as $field) {
+        $row = council('Safe Council', 1);
+        $row[$field] = str_repeat("\u{00E9}", 200);
+        same(1, count(CouncilSync::parseWikitext(wiki([$row]))));
+        $row[$field] .= "\u{00E9}";
+        issue('unsafe_content', fn() => CouncilSync::parseWikitext(wiki([$row])));
+    }
+    $row = council('Safe Council', 1, str_repeat('A', 64));
+    same(1, count(CouncilSync::parseWikitext(wiki([$row]))));
+    $row['state'] .= 'A';
+    issue('unsafe_content', fn() => CouncilSync::parseWikitext(wiki([$row])));
+    $row = council('[[' . str_repeat('x', 8184) . '|A]]', 1);
+    same('A', CouncilSync::parseWikitext(wiki([$row]))[0]['name']);
+    $row['name'] = str_replace('|A]]', 'x|A]]', $row['name']);
+    issue('unsafe_content', fn() => CouncilSync::parseWikitext(wiki([$row])));
+});
+test('document and row limits reject oversize input without truncation', function () {
+    $table = wiki([council('Safe Council', 1)]);
+    $page = str_repeat('x', 4194304 - strlen($table) - 1) . "\n" . $table;
+    same(1, count(CouncilSync::parseWikitext($page)));
+    issue('unsafe_content', fn() => CouncilSync::parseWikitext('x' . $page));
+    $page = str_repeat("\n", 20000 - substr_count($table, "\n")) . $table;
+    same(1, count(CouncilSync::parseWikitext($page)));
+    issue('unsafe_content', fn() => CouncilSync::parseWikitext("\n" . $page));
+    $rows = [];
+    for ($number = 1; $number <= 1000; $number++) {
+        $rows[] = council('A', $number);
+    }
+    same(1000, count(CouncilSync::generateOptions(CouncilSync::parseWikitext(wiki($rows)))));
+    $rows[] = council('A', 1001);
+    issue('unsafe_content', fn() => CouncilSync::parseWikitext(wiki($rows)));
+    issue('unsafe_content', fn() => CouncilSync::generateOptions($rows));
+});
+test('parser resource failures are explicit fetch issues rather than PHP type errors', function () {
+    $limit = ini_get('pcre.backtrack_limit');
+    try {
+        ini_set('pcre.backtrack_limit', '100');
+        issue('parse', fn() => CouncilSync::parseWikitext('<!--' . str_repeat('x', 10000) . '-->'));
+    } finally {
+        ini_set('pcre.backtrack_limit', $limit);
+    }
+});
+test('one malicious row leaves the complete encrypted import state untouched', function () {
+    $model = database(['a-tx-1' => 'A, TX (1)'], [1 => 'a-tx-1'], true);
+    $model->source([council('A', 1)]);
+    $model->synchronize(1, 'cron', null);
+    $before = $model->Clients->getCustomField(1)->values;
+    foreach (['name', 'city', 'state', 'number'] as $field) {
+        $row = council('Bad Council', 2);
+        $row[$field] = '&lt;img src=x onerror=alert(1)&gt;';
+        $model->source([council('A', 1), $row]);
+        issue('unsafe_content', fn() => $model->synchronize(1, 'cron', null));
+        same($before, $model->Clients->getCustomField(1)->values);
+        same(1, $model->settings(1)['previous_count']);
+        same([], $model->history(1));
+        same([], $model->Clients->writes);
+        same('enc:' . base64_encode('a-tx-1'), $model->Record->query('SELECT value FROM client_values WHERE client_id = 1')->fetchColumn());
+    }
+});
+test('cached import previews cannot bypass label and slug validation', function () {
+    $model = database(['old' => 'Old'], [1 => 'old'], true);
+    $model->source([council('New Council', 3)]);
+    $preview = $model->preview(1);
+    foreach ([
+        ['safe-tx-3' => '<img src=x onerror=alert(1)>'],
+        ['safe-tx-3' => '&lt;script&gt;'],
+        ['../../file.php' => 'Safe Council'],
+        ['safe" onclick="alert(1)' => 'Safe Council'],
+        [str_repeat('a', 241) => 'Safe Council']
+    ] as $options) {
+        $preview['after'] = $options;
+        issue('unsafe_content', fn() => $model->apply(1, $preview, [], 'manual', 1));
+        same(['Old' => 'old'], $model->Clients->getCustomField(1)->values);
+        same([], $model->history(1));
+        same([], $model->Clients->writes);
+    }
+});
+test('serialized imported options fit the native TEXT column exactly or fail before writes', function () {
+    $model = database([]);
+    $model->source([council('A', 1)]);
+    $preview = $model->preview(1);
+    $options = [];
+    for ($index = 1; strlen(json_encode(array_flip($options))) < 65535; $index++) {
+        $value = 'council-' . $index;
+        $options[$value] = str_pad('Council ' . $index, 250, 'a');
+    }
+    $excess = strlen(json_encode(array_flip($options))) - 65535;
+    $options[$value] = substr($options[$value], 0, 250 - $excess);
+    same(65535, strlen(json_encode(array_flip($options))));
+    $preview['after'] = $options;
+    same('dry-run', $model->apply(1, $preview, [], 'manual', 1, true)['status']);
+    $preview['after'][$value] .= 'a';
+    same(65536, strlen(json_encode(array_flip($preview['after']))));
+    issue('unsafe_content', fn() => $model->apply(1, $preview, [], 'manual', 1));
+    same([], $model->Clients->getCustomField(1)->values);
+    same([], $model->history(1));
+});
 test('slug punctuation and case, with sorting by name then council number', function () {
     $options = CouncilSync::generateOptions([
         council('zeta', 9), council('Alpha', 20), council('alpha', 2), council("Patriots\u{2019} Path Council", 358, 'NJ')
@@ -47,7 +199,7 @@ test('row-count threshold is exact and never allows zero', function () {
     issue('state_unknown', fn() => CouncilSync::stateAbbreviation('Unknown location'));
 });
 test('required contact builds the precise Wikimedia User-Agent', function () {
-    same('CouncilSync-Blesta/1.1.0 (https://example.com/council-sync) PHP/' . PHP_VERSION, CouncilSync::userAgent('https://example.com/council-sync'));
+    same('CouncilSync-Blesta/1.2.0 (https://example.com/council-sync) PHP/' . PHP_VERSION, CouncilSync::userAgent('https://example.com/council-sync'));
     same('support@example.com', CouncilSync::validateContact('support@example.com'));
     foreach (['', "support@example.com\r\nInjected: header", 'not-a-contact', 'ftp://example.com'] as $contact) {
         issue('contact', fn() => CouncilSync::validateContact($contact));
@@ -233,6 +385,7 @@ test('busy and nested transactions are explicit errors', function () {
 });
 
 require __DIR__ . DIRECTORY_SEPARATOR . 'test_plugin.php';
+require __DIR__ . DIRECTORY_SEPARATOR . 'test_software.php';
 echo 'PHP ' . PHP_VERSION . "\n";
 $failed = 0;
 foreach ($tests as $name => $operation) {

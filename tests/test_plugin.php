@@ -39,6 +39,12 @@ class Loader
     public static function loadComponents(object $target, array $names): void
     {
         foreach ($names as $name) {
+            if ($name === 'Acl') {
+                if (!isset($target->Acl)) {
+                    $target->Acl = new TestSoftwareAcl();
+                }
+                continue;
+            }
             if ($name !== 'Input') {
                 throw new RuntimeException('Unexpected test component: ' . $name);
             }
@@ -104,9 +110,10 @@ class TestForm
         $uri = $uri ?? $this->tokenKey ?? $_SERVER['REQUEST_URI'];
         return is_string($token) && hash_equals($this->token($uri), $token);
     }
-    public function create(string $uri): void
+    public function create(string $uri, array $attributes = []): void
     {
-        echo '<form method="post" action="' . $this->safe($uri) . '">';
+        echo '<form method="post" action="' . $this->safe($uri) . '"'
+            . (isset($attributes['id']) ? ' id="' . $this->safe($attributes['id']) . '"' : '') . '>';
         $this->fieldHidden('_csrf_token', $this->token($this->tokenKey ?? $uri));
     }
     public function end(): void { echo '</form>'; }
@@ -116,8 +123,20 @@ class TestForm
     }
     public function fieldText(string $name, mixed $value, array $attributes = []): void { $this->fieldHidden($name, $value); }
     public function fieldNumber(string $name, mixed $value, int $min, int $max, int $step, array $attributes = []): void { $this->fieldHidden($name, $value); }
-    public function fieldCheckbox(string $name, mixed $value, bool $checked, array $attributes = []): void { $this->fieldHidden($name, $value); }
-    public function fieldRadio(string $name, mixed $value, bool $checked, array $attributes = []): void { $this->fieldHidden($name, $value); }
+    public function fieldCheckbox(string $name, mixed $value, bool $checked, array $attributes = []): void
+    {
+        $this->choice('checkbox', $name, $value, $checked, $attributes);
+    }
+    public function fieldRadio(string $name, mixed $value, bool $checked, array $attributes = []): void
+    {
+        $this->choice('radio', $name, $value, $checked, $attributes);
+    }
+    private function choice(string $type, string $name, mixed $value, bool $checked, array $attributes): void
+    {
+        echo '<input type="' . $type . '" name="' . $this->safe($name) . '" value="' . $this->safe($value) . '"'
+            . ($checked ? ' checked' : '') . (isset($attributes['disabled']) ? ' disabled' : '')
+            . (isset($attributes['required']) ? ' required' : '') . '>';
+    }
     public function fieldSelect(string $name, array $values, mixed $selected, array $attributes = []): void
     {
         echo '<select name="' . $this->safe($name) . '">';
@@ -177,6 +196,7 @@ require dirname(__DIR__) . '/plugins/council_sync/controllers/admin_main.php';
 
 class TestGroups
 {
+    public function getStaffGroupByStaff(int $staff, int $company): ?object { return $staff === 1 ? $this->get($company) : null; }
     public function get(int $id): object { return (object) ['id' => $id, 'company_id' => $id, 'name' => 'Synthetic staff']; }
     public function getAll(int $company): array { return [$this->get($company)]; }
 }
@@ -319,7 +339,7 @@ class TestCronTasks
     public function getByKey(string $key, string $dir): object { return (object) ['id' => 1]; }
     public function getTaskRunByKey(string $key, string $dir): mixed
     {
-        return $this->Record->query('SELECT id AS task_run_id, company_id, interval FROM cron_task_runs WHERE company_id = 1')->fetch();
+        return $this->Record->query('SELECT id AS task_run_id, company_id, `interval` FROM cron_task_runs WHERE company_id = 1')->fetch();
     }
     public function editTaskRun(int $id, array $vars): void
     {
@@ -328,7 +348,7 @@ class TestCronTasks
             $this->errors = ['interval' => 'Rejected'];
             return;
         }
-        $this->Record->query('UPDATE cron_task_runs SET interval = ? WHERE id = ?', [$vars['interval'], $id]);
+        $this->Record->query('UPDATE cron_task_runs SET `interval` = ? WHERE id = ?', [$vars['interval'], $id]);
     }
     public function deleteTaskRun(int $id): void { $this->Record->query('DELETE FROM cron_task_runs WHERE id = ?', $id); }
     public function deleteTask(int $id, string $type, string $dir): void {}
@@ -337,9 +357,11 @@ class TestCronTasks
 
 function plugin(TestCouncilSync $model, bool $ticket = false): CouncilSyncPlugin
 {
-    $model->Record->pdo->exec('CREATE TABLE test_tickets (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER, summary TEXT, status TEXT, company_id INTEGER)');
-    $model->Record->pdo->exec('CREATE TABLE test_replies (id INTEGER PRIMARY KEY AUTOINCREMENT, ticket_id INTEGER, staff_id INTEGER, details TEXT)');
-    $model->Record->pdo->exec('CREATE TABLE cron_task_runs (id INTEGER PRIMARY KEY, task_id INTEGER, company_id INTEGER, interval INTEGER, enabled INTEGER)');
+    $key = $model->Record->pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql'
+        ? 'BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY' : 'INTEGER PRIMARY KEY AUTOINCREMENT';
+    $model->Record->pdo->exec('CREATE TABLE test_tickets (id ' . $key . ', client_id INTEGER, summary TEXT, status TEXT, company_id INTEGER)');
+    $model->Record->pdo->exec('CREATE TABLE test_replies (id ' . $key . ', ticket_id INTEGER, staff_id INTEGER, details TEXT)');
+    $model->Record->pdo->exec('CREATE TABLE cron_task_runs (id INTEGER PRIMARY KEY, task_id INTEGER, company_id INTEGER, `interval` INTEGER, enabled INTEGER)');
     $model->Record->pdo->exec('INSERT INTO cron_task_runs VALUES (1,1,1,1440,1)');
     $model->Staff = new TestStaff();
     $model->StaffGroups = new TestGroups();
@@ -353,6 +375,9 @@ function plugin(TestCouncilSync $model, bool $ticket = false): CouncilSyncPlugin
         'SupportManagerDepartments' => new TestDepartments(), 'CronTasks' => $model->CronTasks,
         'EmailGroups' => new TestEmailGroups()
     ];
+    $software = new TestSoftware($model->Record, $model, $model->PluginManager);
+    $software->allow = false;
+    Loader::$models['CouncilSyncSoftware'] = $software;
     $instance = new CouncilSyncPlugin();
     $instance->CouncilSync = $model;
     if ($ticket) {
@@ -404,6 +429,59 @@ test('clean cron never sends mail or creates tickets', function () {
     same([], Loader::$models['Emails']->sent);
     same([], Loader::$models['SupportManagerTickets']->added);
     same(1, count($model->history(1)));
+});
+test('rejected Wiki content notifies with safe metadata and never includes the payload', function () {
+    $model = database(['a-tx-1' => 'A, TX (1)'], [1 => 'a-tx-1'], true);
+    $model->source([council('A', 1), council('<script>COUNCIL_ATTACK_MARKER</script>', 2)]);
+    $instance = plugin($model, true);
+    $instance->cron('sync');
+    $instance->cron('sync');
+    same(2, count(Loader::$models['Emails']->sent));
+    same(1, count(Loader::$models['SupportManagerTickets']->added));
+    $details = Loader::$models['Emails']->sent[0]['tags']['details'];
+    same(true, str_contains($details, '"field":"name"'));
+    same(true, str_contains($details, '"row":2'));
+    same(false, str_contains($details, 'COUNCIL_ATTACK_MARKER'));
+    $note = $model->Record->query('SELECT details FROM test_replies')->fetchColumn();
+    same(false, str_contains($note, 'COUNCIL_ATTACK_MARKER'));
+    same(false, str_contains($note, '<script>'));
+    same(['A, TX (1)' => 'a-tx-1'], $model->Clients->getCustomField(1)->values);
+    same([], $model->history(1));
+    same([], $model->Clients->writes);
+});
+test('unknown locations are reported without copying their rejected contents into notices', function () {
+    $model = database([]);
+    $model->source([council('Safe Council', 1, 'Untrusted Place Marker')]);
+    $instance = plugin($model, true);
+    $instance->cron('sync');
+    $details = Loader::$models['Emails']->sent[0]['tags']['details'];
+    same(true, str_contains($details, '"field":"state"'));
+    same(false, str_contains($details, 'Untrusted Place Marker'));
+    $note = $model->Record->query('SELECT details FROM test_replies')->fetchColumn();
+    same(false, str_contains($note, 'Untrusted Place Marker'));
+    same([], $model->Clients->getCustomField(1)->values);
+    same([], $model->history(1));
+});
+test('legitimate quotes and SQL words remain data and are escaped in resolution forms', function () {
+    $model = database(['old' => 'Old'], [1 => 'old'], true);
+    $model->source([council('O\'Brien & "SELECT" Council', 3)]);
+    controller($model);
+    $preview = $model->preview(1);
+    $label = 'O\'Brien & "SELECT" Council, TX (3)';
+    same($label, $preview['after']['obrien-select-council-tx-3']);
+    $renderer = new TestRenderer();
+    $html = $renderer->render('admin_resolve', [
+        'sync_uri' => '/billing/admin/plugin/council_sync/admin_main/', 'nonce' => 'safe-preview',
+        'preview' => $preview, 'client_names' => [1 => 'Synthetic Client']
+    ]);
+    same(true, str_contains($html, htmlspecialchars($label, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')));
+    same(false, str_contains($html, $label));
+    $choices = ['old' => ['mode' => 'remap', 'target' => 'obrien-select-council-tx-3']];
+    same('applied', $model->apply(1, $preview, $choices, 'manual', 1)['status']);
+    same([$label => 'obrien-select-council-tx-3'], $model->Clients->getCustomField(1)->values);
+    same(1, (int) $model->Record->query('SELECT COUNT(*) FROM client_groups')->fetchColumn());
+    same([], Loader::$models['Emails']->sent);
+    same([], Loader::$models['SupportManagerTickets']->added);
 });
 test('email notifies only the configured group initially and at the weekly boundary', function () {
     $model = database(['a-tx-1' => 'A, TX (1)'], [1 => 'a-tx-1', 2 => 'a-tx-1']);
@@ -666,7 +744,7 @@ test('release transport targets the intended public API without authentication',
     same(404, $probe->fetch()['status']);
     same('https://api.github.com/repos/trooptrailer/council-sync-blesta-plugin/releases/latest', $probe->request['url']);
     same(['Accept: application/vnd.github+json', 'X-GitHub-Api-Version: 2026-03-10'], $probe->request['headers']);
-    same(true, str_contains($probe->request['agent'], 'CouncilSync-Blesta/1.1.0'));
+    same(true, str_contains($probe->request['agent'], 'CouncilSync-Blesta/1.2.0'));
 });
 
 test('release checks compare numeric versions and distinguish package, registered and remote versions', function () {
@@ -678,7 +756,7 @@ test('release checks compare numeric versions and distinguish package, registere
     $status = $model->checkForUpdates(1);
     same('outdated', $status['status']);
     same('1.9.0', $status['installed']);
-    same('1.1.0', $status['package']);
+    same('1.2.0', $status['package']);
     same('1.10.0', $status['latest']);
     same(true, $status['upgrade_required']);
     $model->PluginManager->installedVersion = CouncilSync::packageVersion();
@@ -939,7 +1017,7 @@ test('settings display reads cached versions without making a release request', 
     $_SERVER['REQUEST_METHOD'] = 'GET';
     runAction($controller, 'index');
     same('unchecked', $controller->variables['version_status']['status']);
-    same('1.1.0', $controller->variables['version_status']['package']);
+    same('1.2.0', $controller->variables['version_status']['package']);
     same(0, $model->releaseRequests);
     same([], Loader::$models['Emails']->sent);
 });

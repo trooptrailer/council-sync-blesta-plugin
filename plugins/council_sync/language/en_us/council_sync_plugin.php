@@ -26,3 +26,7 @@ $lang['CouncilSyncPlugin.version_email_text'] = "Council Sync software notice: {
 $lang['CouncilSyncPlugin.version_email_html'] = '<p>Council Sync software notice: {issue_type}.</p><pre>{details_html}</pre><p><a href="https://{admin_uri}plugin/council_sync/admin_main/">Plugin settings</a></p><p>Issue hash: {issue_hash}</p>';
 $lang['CouncilSyncPlugin.version_available'] = "A newer stable Council Sync release is available.\nBlesta registered version: %1\$s\nPackage version: %2\$s\nLatest stable version: %3\$s\nRelease: %4\$s\n\nInstall the release manually, complete the Blesta upgrade action, and reload PHP. The plugin never installs updates automatically.";
 $lang['CouncilSyncPlugin.release_unavailable'] = "The latest Council Sync release could not be verified (%1\$s).\nSource: %2\$s\n\nThis unauthenticated checker cannot read private GitHub releases. HTTP 404 can also mean that no release exists. No up-to-date status is assumed, no automatic retry is made, and council synchronization is unaffected.";
+$lang['CouncilSyncPlugin.software'] = 'Software updates';
+$lang['CouncilSyncPlugin.software_permission'] = 'Manage Council Sync software for ALL companies';
+$lang['CouncilSyncPlugin.cleanup_cron_name'] = 'Council Sync update-backup cleanup';
+$lang['CouncilSyncPlugin.cleanup_cron_description'] = 'Finalize expired successful software trials and retry pending backup purges, independently of release checking.';

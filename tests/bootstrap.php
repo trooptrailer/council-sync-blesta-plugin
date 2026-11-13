@@ -59,6 +59,7 @@ class TestCouncilSync extends CouncilSync
     public ?CouncilSyncIssue $releaseFailure = null;
     public int $releaseRequests = 0;
     public int $clock;
+    public ?array $installRelease = null;
 
     public function __construct(public TestRecord $Record, public TestClients $Clients)
     {
@@ -103,6 +104,11 @@ class TestCouncilSync extends CouncilSync
     {
         return $this->clock;
     }
+
+    public function softwareRelease(): array
+    {
+        return $this->installRelease ?? parent::softwareRelease();
+    }
 }
 
 class TestRecord
@@ -138,6 +144,9 @@ class TestRecord
             $parameters = $parameters[0];
         }
         if ($this->pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'sqlite') {
+            if ($sql === 'SELECT DATABASE() AS database_name') {
+                return $this->pdo->query("SELECT 'memory' AS database_name");
+            }
             if (str_starts_with($sql, 'CREATE TABLE IF NOT EXISTS')) {
                 if ($this->failSchema) {
                     throw new PDOException('Synthetic schema failure');
@@ -381,5 +390,6 @@ function database(array $options, array $assignments = [], bool $encrypted = fal
             'encrypted' => (int) $encrypted
         ]);
     }
+    CouncilSyncSoftware::installControl($record);
     return new TestCouncilSync($record, new TestClients(new TestRecord(new PDO('sqlite::memory:'))));
 }

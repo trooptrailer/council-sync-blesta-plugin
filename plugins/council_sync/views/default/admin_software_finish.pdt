@@ -1,0 +1,11 @@
+<div class="card">
+    <div class="card-body">
+        <h1 class="h4"><?php $this->_('AdminSoftware.finish'); ?></h1>
+        <p><?php $this->_('AdminSoftware.finish_help'); ?></p>
+        <?php $this->Form->create($software_uri . 'finish/', ['id' => 'council-software-finish']); ?>
+        <?php $this->Form->fieldHidden('id', $software_trial['id']); ?>
+        <button type="submit" class="btn btn-primary"><?php $this->_('AdminSoftware.finish'); ?></button>
+        <?php $this->Form->end(); ?>
+        <script>document.getElementById('council-software-finish').submit();</script>
+    </div>
+</div>

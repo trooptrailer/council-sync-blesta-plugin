@@ -1,0 +1,30 @@
+<?php
+
+$lang['AdminSoftware.title'] = 'Plugin software updates';
+$lang['AdminSoftware.saved'] = 'Software update settings saved.';
+$lang['AdminSoftware.trial'] = 'Software update: decision pending';
+$lang['AdminSoftware.remaining'] = 'Time remaining before keeping the update and deleting its backup:';
+$lang['AdminSoftware.expired'] = 'The rollback window has closed. The installed version will be kept; backup deletion runs on the cleanup cron or can be completed now.';
+$lang['AdminSoftware.incomplete'] = 'This operation has not completed. No trial countdown starts for an incomplete installation. Recovery backups are retained.';
+$lang['AdminSoftware.finish'] = 'Finish software changes';
+$lang['AdminSoftware.finish_help'] = 'A fresh request is required to load the installed code and finalize the native Blesta upgrade. Continue manually if automatic submission is unavailable.';
+$lang['AdminSoftware.preserve'] = 'Restore the previous software and preserve current Council Sync data';
+$lang['AdminSoftware.restore'] = 'Restore the previous software, backed-up Council Sync tables and its registration metadata';
+$lang['AdminSoftware.preserve_unavailable'] = 'Preserving data is available only during a successful trial with an unchanged plugin data schema.';
+$lang['AdminSoftware.data_loss'] = 'I understand that snapshot restoration discards newer Council Sync settings, audit history, notification state and plugin registration changes. It does not restore client assignments or unrelated Blesta data.';
+$lang['AdminSoftware.rollback_confirm'] = 'Replace the installed plugin files with the backed-up version';
+$lang['AdminSoftware.rollback'] = 'Roll back software';
+$lang['AdminSoftware.commit_confirm'] = 'Keep the current version and permanently delete this operation\'s recovery backup';
+$lang['AdminSoftware.commit'] = 'Keep version and purge backup';
+$lang['AdminSoftware.permission_required'] = 'A staff member with the separate software-update permission must finalize or recover this operation.';
+$lang['AdminSoftware.global_warning'] = 'Plugin code and this update trial are shared across all Blesta companies. This is separate from council-data rollback. Do not install/uninstall company instances or deploy other plugin files while a trial is active.';
+$lang['AdminSoftware.backup_dir'] = 'Private backup directory';
+$lang['AdminSoftware.backup_help'] = 'Use an existing, empty, dedicated directory outside every web/document root, writable by PHP and on the same filesystem as the plugin. Existing Council Sync update storage is accepted. Do not use a directory serving another domain.';
+$lang['AdminSoftware.private_confirm'] = 'This is dedicated private storage, not publicly served, with access restricted by the hosting account\'s filesystem permissions';
+$lang['AdminSoftware.window'] = 'Default rollback window (hours)';
+$lang['AdminSoftware.window_warning'] = 'Default: 48 hours. Longer windows increase the risk of losing newer data when restoring a snapshot. Keep the window as short as practical. Its deadline is fixed when installation succeeds; settings cannot be changed during an active operation.';
+$lang['AdminSoftware.install_confirm'] = 'Back up Council Sync and install this published release for all companies';
+$lang['AdminSoftware.install'] = 'Install plugin update';
+$lang['AdminSoftware.install_unavailable'] = 'Configure private storage, complete any existing Blesta upgrade, and check for a newer stable release before installing. This installer must first be installed manually.';
+$lang['AdminSoftware.platform_requirement'] = 'Automatic installation requires POSIX file permissions and PHP ZipArchive. Manual deployment remains available on other hosts.';
+$lang['AdminSoftware.versions'] = 'Blesta registered / package / last verified stable release:';

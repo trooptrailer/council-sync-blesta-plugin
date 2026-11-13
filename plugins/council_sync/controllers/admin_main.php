@@ -29,6 +29,11 @@ class AdminMain extends CouncilSyncController
             $support_active = $this->CouncilSync->supportActive($this->syncCompany);
             $departments = $this->CouncilSync->departments($this->syncCompany);
             $version_status = $this->CouncilSync->versionStatus($this->syncCompany);
+            $this->uses(['CouncilSync.CouncilSyncSoftware']);
+            Language::loadLang('admin_software', null, dirname(__DIR__) . DIRECTORY_SEPARATOR . 'language' . DIRECTORY_SEPARATOR);
+            $software_trial = $this->CouncilSyncSoftware->banner();
+            $software_allowed = $this->CouncilSyncSoftware->authorized($this->syncStaff, $this->syncCompany);
+            $software_uri = $this->base_uri . 'plugin/council_sync/admin_software/';
             $run = $this->CouncilSync->CronTasks->getTaskRunByKey('sync', 'council_sync');
             if (!$run || (int) $run->company_id !== $this->syncCompany) {
                 throw new CouncilSyncIssue('settings', 'cron_missing');
@@ -39,7 +44,10 @@ class AdminMain extends CouncilSyncController
                     $settings[$key] = $this->post[$key];
                 }
             }
-            $this->set(compact('settings', 'fields', 'groups', 'support_active', 'departments', 'version_status'));
+            $this->set(compact(
+                'settings', 'fields', 'groups', 'support_active', 'departments', 'version_status',
+                'software_trial', 'software_allowed', 'software_uri'
+            ));
             $this->view->setView('admin_main', 'council_sync.default');
         } catch (CouncilSyncIssue|PDOException|JsonException $error) {
             $this->syncError($error);

@@ -26,8 +26,10 @@ class CouncilSyncPlugin extends Plugin
     {
         Loader::loadModels($this, ['CouncilSync.CouncilSync', 'PluginManager']);
         try {
+            CouncilSyncSoftware::installControl($this->CouncilSync->Record);
+            CouncilSyncSoftware::allowNativeUpgrade($this->CouncilSync->Record, $current_version, $this->getVersion());
             if (version_compare($current_version, $this->getVersion(), '>')) {
-                throw new CouncilSyncIssue('storage', 'downgrade');
+                return;
             }
             foreach ($this->PluginManager->getByDir('council_sync') as $instance) {
                 $this->CouncilSync->installTables((int) $instance->company_id);
@@ -46,8 +48,9 @@ class CouncilSyncPlugin extends Plugin
                 throw new CouncilSyncIssue('settings', 'not_installed');
             }
             $company = (int) $instance->company_id;
+            CouncilSyncSoftware::assertIdle($this->CouncilSync->Record);
             $this->CouncilSync->locked($company, function () use ($company, $last_instance) {
-                foreach (['sync', 'updates'] as $key) {
+                foreach (['sync', 'updates', 'software_cleanup'] as $key) {
                     $task = $this->CronTasks->getByKey($key, 'council_sync');
                     if ($task) {
                         $runs = $this->CouncilSync->Record->select('id')->from('cron_task_runs')
@@ -95,14 +98,18 @@ class CouncilSyncPlugin extends Plugin
             'enabled' => 1, 'options' => ['sub' => [
                 ['uri' => 'plugin/council_sync/admin_main/', 'name' => Language::_('CouncilSyncPlugin.settings', true)],
                 ['uri' => 'plugin/council_sync/admin_main/resolve/', 'name' => Language::_('CouncilSyncPlugin.resolve', true)],
-                ['uri' => 'plugin/council_sync/admin_main/history/', 'name' => Language::_('CouncilSyncPlugin.history', true)]
+                ['uri' => 'plugin/council_sync/admin_main/history/', 'name' => Language::_('CouncilSyncPlugin.history', true)],
+                ['uri' => 'plugin/council_sync/admin_software/', 'name' => Language::_('CouncilSyncPlugin.software', true)]
             ]]
         ]];
     }
 
     public function getPermissionGroups()
     {
-        return [['name' => Language::_('CouncilSyncPlugin.name', true), 'level' => 'staff', 'alias' => 'council_sync']];
+        return [
+            ['name' => Language::_('CouncilSyncPlugin.name', true), 'level' => 'staff', 'alias' => 'council_sync'],
+            ['name' => Language::_('CouncilSyncPlugin.software_permission', true), 'level' => 'staff', 'alias' => 'council_sync_software']
+        ];
     }
 
     public function getPermissions()
@@ -110,6 +117,9 @@ class CouncilSyncPlugin extends Plugin
         return [[
             'group_alias' => 'council_sync', 'name' => Language::_('CouncilSyncPlugin.permission', true),
             'alias' => 'council_sync.admin_main', 'action' => '*'
+        ], [
+            'group_alias' => 'council_sync_software', 'name' => Language::_('CouncilSyncPlugin.software_permission', true),
+            'alias' => 'council_sync.admin_software', 'action' => '*'
         ]];
     }
 
@@ -125,6 +135,11 @@ class CouncilSyncPlugin extends Plugin
             'name' => Language::_('CouncilSyncPlugin.updates_cron_name', true),
             'description' => Language::_('CouncilSyncPlugin.updates_cron_description', true),
             'type' => 'interval', 'type_value' => 1440, 'enabled' => 1
+        ], [
+            'key' => 'software_cleanup', 'task_type' => 'plugin', 'dir' => 'council_sync',
+            'name' => Language::_('CouncilSyncPlugin.cleanup_cron_name', true),
+            'description' => Language::_('CouncilSyncPlugin.cleanup_cron_description', true),
+            'type' => 'interval', 'type_value' => 5, 'enabled' => 1
         ]];
     }
 
@@ -149,6 +164,17 @@ class CouncilSyncPlugin extends Plugin
 
     public function cron($key)
     {
+        if ($key === 'software_cleanup') {
+            Loader::loadModels($this, ['CouncilSync.CouncilSyncSoftware']);
+            try {
+                $this->CouncilSyncSoftware->cleanup();
+            } catch (CouncilSyncIssue|PDOException $error) {
+                error_log('COUNCIL_SYNC_SOFTWARE_CLEANUP_FAILED reason='
+                    . ($error instanceof CouncilSyncIssue ? $error->reason : 'database'));
+                throw $error;
+            }
+            return;
+        }
         if (!in_array($key, ['sync', 'updates'], true)) {
             return;
         }

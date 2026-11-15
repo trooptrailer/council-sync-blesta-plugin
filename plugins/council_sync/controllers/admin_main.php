@@ -50,7 +50,7 @@ class AdminMain extends CouncilSyncController
             ));
             $this->view->setView('admin_main', 'council_sync.default');
         } catch (CouncilSyncIssue|PDOException|JsonException $error) {
-            $this->syncError($error);
+            $this->syncError($error, true);
             $this->redirect($this->base_uri);
         }
     }
@@ -61,7 +61,7 @@ class AdminMain extends CouncilSyncController
             $this->requireSyncPost();
             $this->CouncilSync->checkForUpdates($this->syncCompany, true);
         } catch (CouncilSyncIssue|PDOException|JsonException $error) {
-            $this->syncError($error);
+            $this->syncError($error, true);
         }
         $this->redirect($this->syncUri());
     }
@@ -80,7 +80,7 @@ class AdminMain extends CouncilSyncController
             $applied = $this->CouncilSync->apply($this->syncCompany, $result['preview'], [], 'manual', $this->syncStaff);
             $this->success($applied);
         } catch (CouncilSyncIssue|PDOException|JsonException $error) {
-            $this->syncError($error);
+            $this->syncError($error, true);
         }
         $this->redirect($this->syncUri());
     }
@@ -114,8 +114,9 @@ class AdminMain extends CouncilSyncController
             }
             $this->showResolution();
         } catch (CouncilSyncIssue|PDOException|JsonException $error) {
-            $this->syncError($error);
-            if ($error instanceof CouncilSyncIssue && $error->kind === 'resolution') {
+            $inline = $error instanceof CouncilSyncIssue && $error->kind === 'resolution';
+            $this->syncError($error, !$inline);
+            if ($inline) {
                 $this->set('posted_choices', is_array($this->post['choices'] ?? null) ? $this->post['choices'] : []);
                 $this->showResolution();
                 return;
@@ -178,7 +179,7 @@ class AdminMain extends CouncilSyncController
     private function success(array $result): void
     {
         $summary = $result['summary'];
-        $this->setMessage('message', Language::_(
+        $this->flashMessage('message', Language::_(
             'AdminMain.updated', true, $summary['added'], $summary['removed'], $summary['labels'],
             $summary['remapped'], $summary['accepted_orphans']
         ));
@@ -195,7 +196,7 @@ class AdminMain extends CouncilSyncController
             $this->set(compact('page', 'batches', 'latest', 'selected', 'items'));
             $this->view->setView('admin_history', 'council_sync.default');
         } catch (CouncilSyncIssue|PDOException|JsonException $error) {
-            $this->syncError($error);
+            $this->syncError($error, true);
             $this->redirect($this->syncUri());
         }
     }
@@ -207,13 +208,13 @@ class AdminMain extends CouncilSyncController
             if (($this->post['confirm_rollback'] ?? null) !== '1') {
                 throw new CouncilSyncIssue('rollback', 'rollback_confirmation');
             }
-            $audit = $this->CouncilSync->rollback($this->syncCompany, self::id($this->post['batch_id'] ?? null), $this->syncStaff);
+            $audit = $this->CouncilSync->rollbackBatch($this->syncCompany, self::id($this->post['batch_id'] ?? null), $this->syncStaff);
             $this->Session->clear($this->previewKey());
-            $this->setMessage('message', Language::_('AdminMain.rolled_back', true, $audit));
+            $this->flashMessage('message', Language::_('AdminMain.rolled_back', true, $audit));
             $this->redirect($this->syncUri('history') . $audit . '/');
             return;
         } catch (CouncilSyncIssue|PDOException|JsonException $error) {
-            $this->syncError($error);
+            $this->syncError($error, true);
         }
         $this->redirect($this->syncUri('history'));
     }

@@ -35,7 +35,7 @@ class AdminSoftware extends CouncilSyncController
             $this->set(compact('configuration', 'software_trial', 'version_status', 'install_supported'));
             $this->view->setView('admin_software', 'council_sync.default');
         } catch (CouncilSyncIssue|PDOException|JsonException $error) {
-            $this->syncError($error);
+            $this->syncError($error, true);
             $this->redirect($this->syncUri());
         }
     }
@@ -46,7 +46,7 @@ class AdminSoftware extends CouncilSyncController
             $this->requireSyncPost();
             $this->CouncilSync->checkForUpdates($this->syncCompany, true);
         } catch (CouncilSyncIssue|PDOException|JsonException $error) {
-            $this->syncError($error);
+            $this->syncError($error, true);
         }
         $this->redirect($this->base_uri . 'plugin/council_sync/admin_software/');
     }
@@ -63,7 +63,7 @@ class AdminSoftware extends CouncilSyncController
             $this->redirect($this->base_uri . 'plugin/council_sync/admin_software/finish/');
             return;
         } catch (CouncilSyncIssue|PDOException|JsonException $error) {
-            $this->syncError($error);
+            $this->syncError($error, true);
         }
         $this->redirect($this->base_uri . 'plugin/council_sync/admin_software/');
     }
@@ -84,7 +84,7 @@ class AdminSoftware extends CouncilSyncController
             $this->set('software_trial', $software_trial);
             $this->view->setView('admin_software_finish', 'council_sync.default');
         } catch (CouncilSyncIssue|PDOException|JsonException $error) {
-            $this->syncError($error);
+            $this->syncError($error, true);
             $this->redirect($this->base_uri . 'plugin/council_sync/admin_software/');
         }
     }
@@ -98,11 +98,11 @@ class AdminSoftware extends CouncilSyncController
             if (!is_string($mode) || ($mode === 'restore' && ($this->post['confirm_data_loss'] ?? null) !== '1')) {
                 throw new CouncilSyncIssue('software', 'software_choice');
             }
-            $this->CouncilSyncSoftware->rollback($this->syncStaff, $this->syncCompany, $this->id(), $mode);
+            $this->CouncilSyncSoftware->rollbackUpdate($this->syncStaff, $this->syncCompany, $this->id(), $mode);
             $this->redirect($this->base_uri . 'plugin/council_sync/admin_software/finish/');
             return;
         } catch (CouncilSyncIssue|PDOException|JsonException $error) {
-            $this->syncError($error);
+            $this->syncError($error, true);
         }
         $this->redirect($this->base_uri . 'plugin/council_sync/admin_software/');
     }
@@ -112,11 +112,11 @@ class AdminSoftware extends CouncilSyncController
         try {
             $this->requireSyncPost();
             $this->confirm('confirm_commit');
-            $this->CouncilSyncSoftware->commit($this->syncStaff, $this->syncCompany, $this->id());
+            $this->CouncilSyncSoftware->commitUpdate($this->syncStaff, $this->syncCompany, $this->id());
             $this->redirect($this->syncUri());
             return;
         } catch (CouncilSyncIssue|PDOException|JsonException $error) {
-            $this->syncError($error);
+            $this->syncError($error, true);
         }
         $this->redirect($this->base_uri . 'plugin/council_sync/admin_software/');
     }

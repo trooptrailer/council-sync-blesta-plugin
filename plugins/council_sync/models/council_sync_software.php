@@ -465,9 +465,80 @@ class CouncilSyncSoftware extends CouncilSyncModel
         }
     }
 
-    protected function download(string $commit, string $path): void
+    public static function releaseRedirect(string $url): string
     {
-        if (!preg_match('~^[a-f0-9]{40}$~D', $commit) || !extension_loaded('curl')) {
+        $parts = parse_url($url);
+        if (
+            strlen($url) > 8192 || preg_match('~[\x00-\x20\x7f]~', $url)
+            || !filter_var($url, FILTER_VALIDATE_URL) || ($parts['scheme'] ?? null) !== 'https'
+            || strtolower($parts['host'] ?? '') !== 'release-assets.githubusercontent.com'
+            || isset($parts['user']) || isset($parts['pass']) || isset($parts['fragment'])
+            || (isset($parts['port']) && $parts['port'] !== 443)
+        ) {
+            throw new CouncilSyncIssue('software', 'software_download');
+        }
+        return $url;
+    }
+
+    protected function downloadRequest(string $url, $stream): array
+    {
+        if (!extension_loaded('curl')) {
+            throw new CouncilSyncIssue('software', 'software_download');
+        }
+        $handle = curl_init($url);
+        $bytes = $headerBytes = $status = 0;
+        $location = null;
+        curl_setopt_array($handle, [
+            CURLOPT_USERAGENT => 'CouncilSync-Blesta/' . CouncilSync::packageVersion(),
+            CURLOPT_HTTPHEADER => ['Accept: application/octet-stream', 'X-GitHub-Api-Version: 2026-03-10'],
+            CURLOPT_CONNECTTIMEOUT => 10, CURLOPT_TIMEOUT => 60, CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_SSL_VERIFYPEER => true, CURLOPT_SSL_VERIFYHOST => 2,
+            CURLOPT_HEADERFUNCTION => static function ($handle, $line) use (&$status, &$location, &$headerBytes) {
+                $headerBytes += strlen($line);
+                if ($headerBytes > 32768) {
+                    return 0;
+                }
+                if (preg_match('~^HTTP/\S+\s+(\d{3})~', $line, $match)) {
+                    $status = (int) $match[1];
+                    $location = null;
+                } elseif (stripos($line, 'Location:') === 0) {
+                    if ($location !== null) {
+                        return 0;
+                    }
+                    $location = trim(substr($line, 9));
+                }
+                return strlen($line);
+            },
+            CURLOPT_WRITEFUNCTION => static function ($handle, $chunk) use ($stream, &$bytes, &$status) {
+                $bytes += strlen($chunk);
+                if ($bytes > 16777216) {
+                    return 0;
+                }
+                if ($status !== 200) {
+                    return strlen($chunk);
+                }
+                $written = @fwrite($stream, $chunk);
+                return is_int($written) ? $written : 0;
+            }
+        ]);
+        try {
+            if (curl_exec($handle) === false) {
+                throw new CouncilSyncIssue('software', 'software_download');
+            }
+            return ['status' => (int) curl_getinfo($handle, CURLINFO_RESPONSE_CODE), 'location' => $location];
+        } finally {
+            curl_close($handle);
+        }
+    }
+
+    protected function download(array $release, string $path): void
+    {
+        $asset = $release['asset'] ?? null;
+        if (
+            !is_array($asset) || !is_int($asset['id'] ?? null) || $asset['id'] < 1
+            || !is_int($asset['size'] ?? null) || $asset['size'] < 1 || $asset['size'] > 16777216
+            || !is_string($asset['sha256'] ?? null) || !preg_match('~^[a-f0-9]{64}$~D', $asset['sha256'])
+        ) {
             throw new CouncilSyncIssue('software', 'software_download');
         }
         $stream = @fopen($path, 'xb');
@@ -478,25 +549,43 @@ class CouncilSyncSoftware extends CouncilSyncModel
             fclose($stream);
             throw new CouncilSyncIssue('software', 'software_files');
         }
-        $handle = curl_init('https://codeload.github.com/' . CouncilSync::REPOSITORY . '/zip/' . $commit);
-        $bytes = 0;
-        curl_setopt_array($handle, [
-            CURLOPT_USERAGENT => 'CouncilSync-Blesta/' . CouncilSync::packageVersion(),
-            CURLOPT_CONNECTTIMEOUT => 10, CURLOPT_TIMEOUT => 60, CURLOPT_FOLLOWLOCATION => false,
-            CURLOPT_SSL_VERIFYPEER => true, CURLOPT_SSL_VERIFYHOST => 2,
-            CURLOPT_WRITEFUNCTION => static function ($handle, $chunk) use ($stream, &$bytes) {
-                $bytes += strlen($chunk);
-                return $bytes <= 16777216 ? (int) @fwrite($stream, $chunk) : 0;
-            }
-        ]);
         try {
-            if (curl_exec($handle) === false || curl_getinfo($handle, CURLINFO_RESPONSE_CODE) !== 200 || !fflush($stream)) {
+            $response = $this->downloadRequest(
+                'https://api.github.com/repos/' . CouncilSync::REPOSITORY . '/releases/assets/' . $asset['id'], $stream
+            );
+            if ($response['status'] === 302) {
+                if (!is_string($response['location'] ?? null)) {
+                    throw new CouncilSyncIssue('software', 'software_download');
+                }
+                $response = $this->downloadRequest(self::releaseRedirect($response['location']), $stream);
+            }
+            if ($response['status'] !== 200 || !fflush($stream)) {
+                throw new CouncilSyncIssue('software', 'software_download');
+            }
+            $stat = fstat($stream);
+            if (!is_array($stat) || $stat['size'] !== $asset['size'] || hash_file('sha256', $path) !== $asset['sha256']) {
                 throw new CouncilSyncIssue('software', 'software_download');
             }
         } finally {
-            curl_close($handle);
             fclose($stream);
         }
+    }
+
+    public static function releasePath(string $path, bool $directory = false): bool
+    {
+        $parts = explode('/', $path);
+        if (array_intersect($parts, ['tests', 'fixtures', 'scratch', 'env', 'vendor', 'credentials'])
+            || str_starts_with(end($parts), 'test_')) {
+            return false;
+        }
+        if (!$directory && count($parts) === 1) {
+            return in_array($path, [
+                'config.json', 'council_sync_plugin.php', 'council_sync_controller.php', 'council_sync_model.php',
+                'README.md', 'LICENSE', 'CHANGELOG.md'
+            ], true);
+        }
+        return in_array($parts[0], ['controllers', 'models', 'views', 'language'], true)
+            && ($directory || in_array(strtolower(pathinfo($path, PATHINFO_EXTENSION)), ['php', 'pdt'], true));
     }
 
     public static function extract(string $archive, string $directory): array
@@ -511,7 +600,6 @@ class CouncilSyncSoftware extends CouncilSyncModel
         self::makeDirectory($directory);
         $seen = [];
         $bytes = 0;
-        $wrapper = null;
         try {
             if ($zip->numFiles > 10000) {
                 throw new CouncilSyncIssue('software', 'software_archive');
@@ -523,25 +611,27 @@ class CouncilSyncSoftware extends CouncilSyncModel
                 }
                 $parts = explode('/', $entry['name']);
                 $top = array_shift($parts);
-                if (!$top || ($wrapper !== null && $wrapper !== $top)) {
+                if ($top !== 'council_sync') {
                     throw new CouncilSyncIssue('software', 'software_archive');
                 }
-                self::safeRelative($top);
-                $wrapper = $top;
-                if (($parts[0] ?? null) !== 'plugins' || ($parts[1] ?? null) !== 'council_sync') {
-                    continue;
-                }
-                $relative = implode('/', array_slice($parts, 2));
-                if ($relative === '') {
-                    continue;
-                }
-                $directoryEntry = str_ends_with($relative, '/');
-                $relative = self::safeRelative(rtrim($relative, '/'));
+                $relative = implode('/', $parts);
+                $directoryEntry = str_ends_with($entry['name'], '/');
                 if (!$zip->getExternalAttributesIndex($i, $os, $attributes)) {
                     throw new CouncilSyncIssue('software', 'software_archive');
                 }
                 $mode = $os === ZipArchive::OPSYS_UNIX ? ($attributes >> 16) & 0170000 : 0;
                 if ($mode !== 0 && $mode !== ($directoryEntry ? 0040000 : 0100000)) {
+                    throw new CouncilSyncIssue('software', 'software_archive');
+                }
+                if ($relative === '') {
+                    if (!$directoryEntry || $entry['size'] !== 0 || isset($seen[''])) {
+                        throw new CouncilSyncIssue('software', 'software_archive');
+                    }
+                    $seen[''] = true;
+                    continue;
+                }
+                $relative = self::safeRelative(rtrim($relative, '/'));
+                if (!self::releasePath($relative, $directoryEntry) || ($directoryEntry && $entry['size'] !== 0)) {
                     throw new CouncilSyncIssue('software', 'software_archive');
                 }
                 $key = strtolower($relative);
@@ -682,7 +772,7 @@ class CouncilSyncSoftware extends CouncilSyncModel
                 $state['snapshot'] = $this->snapshotStore()->capture($directory, $before['software_update']['data_tables']);
                 $this->snapshotStore()->verify($state['snapshot'], $directory);
                 $this->saveState($state);
-                $this->download($release['commit'], $directory . DIRECTORY_SEPARATOR . 'release.zip');
+                $this->download($release, $directory . DIRECTORY_SEPARATOR . 'release.zip');
                 $package = self::extract($directory . DIRECTORY_SEPARATOR . 'release.zip', $directory . DIRECTORY_SEPARATOR . 'staged');
                 if ($package['version'] !== $state['to']) {
                     throw new CouncilSyncIssue('software', 'software_version');
@@ -825,7 +915,7 @@ class CouncilSyncSoftware extends CouncilSyncModel
         }, false);
     }
 
-    public function rollback(int $staff, int $company, string $id, string $mode): void
+    public function rollbackUpdate(int $staff, int $company, string $id, string $mode): void
     {
         $this->requireAuthorized($staff, $company);
         if (!in_array($mode, ['preserve', 'restore'], true)) {
@@ -893,7 +983,7 @@ class CouncilSyncSoftware extends CouncilSyncModel
         }, false);
     }
 
-    public function commit(int $staff, int $company, string $id): void
+    public function commitUpdate(int $staff, int $company, string $id): void
     {
         $this->requireAuthorized($staff, $company);
         self::guard($this->Record, function () use ($id, $staff) {

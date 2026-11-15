@@ -35,5 +35,7 @@ id_ed25519
 ssh_host_*_key
 .phpunit.cache/
 .phpunit.result.cache
+__pycache__/
+*.py[cod]
 .DS_Store
 Thumbs.db

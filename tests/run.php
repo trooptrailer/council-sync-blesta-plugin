@@ -165,17 +165,24 @@ test('serialized imported options fit the native TEXT column exactly or fail bef
     $model->source([council('A', 1)]);
     $preview = $model->preview(1);
     $options = [];
-    for ($index = 1; strlen(json_encode(array_flip($options))) < 65535; $index++) {
+    for ($index = 1; strlen(serialize(array_flip($options))) < 65535; $index++) {
         $value = 'council-' . $index;
         $options[$value] = str_pad('Council ' . $index, 250, 'a');
     }
-    $excess = strlen(json_encode(array_flip($options))) - 65535;
-    $options[$value] = substr($options[$value], 0, 250 - $excess);
-    same(65535, strlen(json_encode(array_flip($options))));
+    $keys = array_keys($options);
+    $previous = $keys[count($keys) - 2];
+    $options[$previous] = substr($options[$previous], 0, -10);
+    while (strlen(serialize(array_flip($options))) > 65535) {
+        $options[$value] = substr($options[$value], 0, -1);
+    }
+    while (strlen(serialize(array_flip($options))) < 65535) {
+        $options[$previous] .= 'a';
+    }
+    same(65535, strlen(serialize(array_flip($options))));
     $preview['after'] = $options;
     same('dry-run', $model->apply(1, $preview, [], 'manual', 1, true)['status']);
-    $preview['after'][$value] .= 'a';
-    same(65536, strlen(json_encode(array_flip($preview['after']))));
+    $preview['after'][$previous] .= 'a';
+    same(65536, strlen(serialize(array_flip($preview['after']))));
     issue('unsafe_content', fn() => $model->apply(1, $preview, [], 'manual', 1));
     same([], $model->Clients->getCustomField(1)->values);
     same([], $model->history(1));
@@ -199,7 +206,7 @@ test('row-count threshold is exact and never allows zero', function () {
     issue('state_unknown', fn() => CouncilSync::stateAbbreviation('Unknown location'));
 });
 test('required contact builds the precise Wikimedia User-Agent', function () {
-    same('CouncilSync-Blesta/1.2.0 (https://example.com/council-sync) PHP/' . PHP_VERSION, CouncilSync::userAgent('https://example.com/council-sync'));
+    same('CouncilSync-Blesta/1.2.3 (https://example.com/council-sync) PHP/' . PHP_VERSION, CouncilSync::userAgent('https://example.com/council-sync'));
     same('support@example.com', CouncilSync::validateContact('support@example.com'));
     foreach (['', "support@example.com\r\nInjected: header", 'not-a-contact', 'ftp://example.com'] as $contact) {
         issue('contact', fn() => CouncilSync::validateContact($contact));
@@ -257,7 +264,7 @@ test('many-to-one remaps use encrypted model writes and rollback atomically', fu
     same([[1, 'x-tx-3'], [2, 'x-tx-3']], $model->Clients->writes);
     same('enc:' . base64_encode('x-tx-3'), $model->Record->query('SELECT value FROM client_values WHERE client_id = 1')->fetchColumn());
     same($model->Record->pdo, $model->Clients->Record->pdo);
-    $audit = $model->rollback(1, $result['batch_id'], 1);
+    $audit = $model->rollbackBatch(1, $result['batch_id'], 1);
     same('a-tx-1', $model->Clients->getCustomFieldValues(1)[0]->value);
     same('b-tx-2', $model->Clients->getCustomFieldValues(2)[0]->value);
     same('rolled back', $model->batch(1, $result['batch_id'])->status);
@@ -285,7 +292,7 @@ test('accepting orphans leaves client values untouched and audits each client', 
     same([], $model->Clients->writes);
     same(1, $result['summary']['accepted_orphans']);
     same('accepted-orphan', $model->batchItems(1, $result['batch_id'])[0]->action);
-    $model->rollback(1, $result['batch_id'], 1);
+    $model->rollbackBatch(1, $result['batch_id'], 1);
     same('a-tx-1', $model->Clients->getCustomFieldValues(1)[0]->value);
 });
 test('a later client write failure rolls back options, clients, batches and items', function () {
@@ -309,7 +316,7 @@ test('option-only changes log a batch and clear an invalid default; rollback res
     same('applied', $result['status']);
     same(null, $model->Clients->getCustomField(1)->default);
     same(1, count($model->history(1)));
-    $model->rollback(1, $result['batch_id'], 1);
+    $model->rollbackBatch(1, $result['batch_id'], 1);
     same('unused', $model->Clients->getCustomField(1)->default);
 });
 test('dry run writes neither options, values nor audit rows', function () {
@@ -343,9 +350,9 @@ test('rollback is limited to the latest update and itself creates an audit entry
     $first = $model->synchronize(1, 'cron', null)['batch_id'];
     $model->source([council('X', 3), council('Y', 4)]);
     $second = $model->synchronize(1, 'cron', null)['batch_id'];
-    issue('rollback_latest', fn() => $model->rollback(1, $first, 1));
-    $model->rollback(1, $second, 1);
-    $model->rollback(1, $first, 1);
+    issue('rollback_latest', fn() => $model->rollbackBatch(1, $first, 1));
+    $model->rollbackBatch(1, $second, 1);
+    $model->rollbackBatch(1, $first, 1);
     same(4, count($model->history(1)));
 });
 test('rollback blocks new orphaned clients and externally changed options', function () {
@@ -353,10 +360,10 @@ test('rollback blocks new orphaned clients and externally changed options', func
     $model->source([council('X', 3)]);
     $batch = $model->synchronize(1, 'cron', null)['batch_id'];
     $model->Record->insert('client_values', ['client_field_id' => 1, 'client_id' => 99, 'value' => 'x-tx-3', 'encrypted' => 0]);
-    issue('rollback_orphan', fn() => $model->rollback(1, $batch, 1));
+    issue('rollback_orphan', fn() => $model->rollbackBatch(1, $batch, 1));
     $model->Record->query('DELETE FROM client_values WHERE client_id = 99');
-    $model->Record->query('UPDATE client_fields SET `values` = ?', '{"Different":"x-tx-3"}');
-    issue('rollback_changed', fn() => $model->rollback(1, $batch, 1));
+    $model->Record->query('UPDATE client_fields SET `values` = ?', serialize(['Different' => 'x-tx-3']));
+    issue('rollback_changed', fn() => $model->rollbackBatch(1, $batch, 1));
     same('applied', $model->batch(1, $batch)->status);
 });
 test('no repeatable-read snapshot is established before all field locks', function () {

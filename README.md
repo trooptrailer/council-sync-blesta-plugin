@@ -7,6 +7,10 @@ explicit remapping, notifications and an audit history.
 
 **Experimental:** Use of this plugin comes at your own risk!
 
+**Current package version: 1.2.3.** See the [changelog](./CHANGELOG.md) for
+backfilled version history. Development packages are not automatically published
+GitHub Releases.
+
 ## Features
 
 - Fetches the council table through the MediaWiki Action API (unauthenticated).
@@ -18,6 +22,7 @@ explicit remapping, notifications and an audit history.
 - Provides independently configurable staff email, Support Manager tickets and release checks.
 - Offers explicit software installation with private backups and a configurable, 48-hour rollback trial.
 - Uses Blesta's native staff widgets, navigation tabs and form styling, without bundling a separate theme.
+- Checks PRs for secrets, tests and release readiness; publishes installable ZIPs from approved main plugin changes.
 
 ## Requirements
 
@@ -34,8 +39,13 @@ explicit remapping, notifications and an audit history.
 
 ## Installation
 
-1. Copy [plugins/council_sync](./plugins/council_sync) into the Blesta installation's
-   `plugins` directory. Deploy only the plugin directory, not the entire repository.
+1. Download the versioned `council-sync-X.Y.Z.zip` asset from
+   [GitHub Releases](https://github.com/trooptrailer/council-sync-blesta-plugin/releases),
+   not GitHub's automatically generated source-code ZIP. Extract it into Blesta's
+   `plugins` directory so the result is `plugins/council_sync/config.json`.
+   The ZIP has one `council_sync/` folder, including README, LICENSE and CHANGELOG;
+   it contains no tests or CI files. From a source checkout, alternatively copy
+   [plugins/council_sync](./plugins/council_sync) there.
 2. Install **Council Sync** under **Settings > Company > Plugins**.
 3. Grant **Manage Council Sync** to the appropriate staff group under
    **Settings > System > Staff > Staff Groups**.
@@ -44,13 +54,19 @@ explicit remapping, notifications and an audit history.
 4. Open **Council Sync** in the staff navigation. Select an existing dropdown client
    field, configure notification destinations, enter a Wikimedia contact and save.
    Create a dropdown in Blesta's client group settings first if none is available.
-5. Review the Council Sync email templates and ensure their sender is allowed by
-   the configured mail provider.
+5. Review the two Council Sync staff email templates, replace their placeholder
+   sender with an address allowed by the configured mail provider, and verify delivery.
 6. Run **Update now** and review the result before relying on scheduled updates.
 
 Installation registers daily council-sync and release-check tasks, a five-minute
 update-backup cleanup task, and staff email templates. Blesta's system cron must
 be running. Cleanup remains enabled independently of release checks.
+
+Blesta normally grants the installing staff group both plugin permissions.
+Review those grants if that group should not deploy software. The generic plugin
+**Settings** button shows framework Automation/Actions/Events registrations, not
+the Council Sync configuration form. An empty Events tab is expected: this plugin
+does not declare event listeners.
 
 ## Settings
 
@@ -70,11 +86,22 @@ Software settings and update trials are installation-wide.
 | Daily release checks | Enabled by default, independently of council synchronization. |
 | Delete data on final uninstall | Disabled by default; requires explicit confirmation. See [Uninstalling](#uninstalling). |
 
+Wikimedia requests identify the plugin as
+`CouncilSync-Blesta/<plugin version> (<contact>) PHP/<PHP version>`. They verify
+TLS, refuse redirects, use a 10-second connection timeout and 30-second request
+timeout, and cap the response at 4 MiB. HTTP 403/429 and other fetch failures abort
+without applying changes; there are no immediate automatic fetch retries.
+
 ## Council updates and conflicts
 
 Labels use the council name, headquarters state or country, and number, such as
 `Longhorn Council, TX (662)`. Values are lowercase hyphenated slugs, such as
-`longhorn-council-tx-662`. Locations are omitted for rows marked `n/a`.
+`longhorn-council-tx-662`; apostrophes are removed before non-alphanumeric runs
+collapse into hyphens. US locations use USPS abbreviations, including PR.
+Overseas locations retain the country, for example `Far East Council, Japan (803)`
+and `far-east-council-japan-803`. Locations are omitted for rows marked `n/a`,
+for example `Northeast Region (901)` and `northeast-region-901`.
+Options sort case-insensitively by council name, then numerically by council number.
 
 Added options, label-only edits and unused removals apply automatically. If a
 removed or changed value is still assigned to any client, the entire scheduled
@@ -119,7 +146,7 @@ The fixed safety ceilings are:
 | Council number | 1-4 ASCII digits, numeric value 1-9999; leading zeros normalize as before |
 | Council rows | 1,000 |
 | Imported option label / slug | 250 Unicode characters / 240 ASCII bytes |
-| Serialized Blesta label-to-value option list | 65,535 JSON bytes, matching its TEXT column ceiling |
+| Serialized Blesta label-to-value option list | 65,535 PHP-serialized bytes, matching its TEXT column ceiling |
 
 Any invalid required value aborts the whole run: no skipped councils, option
 changes, remaps, audit batches or row-count-baseline updates. Scheduled failures
@@ -160,6 +187,8 @@ Every applied change records the previous and new option lists, source, staff ID
 for manual actions, and affected client actions. Copies of old and new client
 values in the audit history use Blesta's system encryption.
 
+A successful run with no option or client changes creates no audit batch.
+
 Only the company's latest applied update can be rolled back. Rollback is blocked
 if the field or affected clients changed afterward, or if restoring the old options
 would orphan another assignment. Applying changes and rolling them back use
@@ -186,17 +215,83 @@ produce an **unavailable** status, not an assumption that the plugin is current.
 Previously verified metadata is retained with its timestamp after a failed check.
 Scheduled release checks can be disabled independently.
 
+Until a compatible stable GitHub Release is published, an **unavailable** check
+is expected; it does not mean the installed package is confirmed current.
+A populated branch or tag alone does not enable software installation.
+
+### CI, release readiness and repository settings
+
+The [CI workflow](./.github/workflows/ci.yml) runs on PRs, main pushes and merge-queue
+checks. Its required-check-ready jobs are **Secret scan**, **Tests** and
+**Release readiness**. Main-bound packages are also built and validated before merge.
+
+- Changes under `plugins/council_sync/` require an unpublished stable `X.Y.Z`
+  manifest version, current README version and matching changelog entry.
+  Approve version changes manually; nothing increments the number automatically.
+- Docs/tests/CI-only changes do not require another version or publish a release.
+- Plugin-changing main pushes publish `council-sync-X.Y.Z.zip` at tag `vX.Y.Z`
+  only after all checks pass. Tag creation refuses an existing ref, then the ZIP
+  uploads to a draft before publication. Existing versions are never overwritten;
+  rerunning an already-published commit is a no-op. Failed drafts/tags require
+  operator review rather than automatic deletion.
+- Beta/build identifiers are not published or allowed as main release versions.
+  Only the canonical repository's main-push job receives publication permission.
+
+The [release helper](./.github/scripts/release.py) builds one installable folder
+and adjusts bundled documentation links. PHP source/PDT/config files and the
+three root documents are allowed; unexpected private, test or unsupported asset
+files are rejected, not silently copied.
+
+Configure these GitHub settings as a repository administrator; workflow files
+alone do not enforce branch protection:
+
+1. Under **Settings > Advanced Security**, enable **Secret Protection** and
+   **Push protection**. See GitHub's
+   [enablement instructions](https://docs.github.com/en/code-security/how-tos/secure-your-secrets/prevent-future-leaks/enable-push-protection).
+2. In the existing main branch protection/ruleset, require **Secret scan**,
+   **Tests** and **Release readiness**. Require branches to be up to date before
+   merging, or use the supported merge queue, so stale checks cannot merge two
+   plugin PRs using the same version. Check names become selectable after a run.
+3. Review changes to workflow and security configuration before approving them.
+
+The [pre-commit configuration](./.pre-commit-config.yaml) scans locally only after
+`pre-commit install`; it does not create GitHub checks. Both it and CI use
+[Gitleaks rules](./.gitleaks.toml). CI uses a checksum-pinned free CLI with full
+redaction, not the organization-licensed Gitleaks Action; no `GITLEAKS_LICENSE`
+or application credentials are needed. PR checks happen after a push, whereas
+GitHub push protection and local hooks can prevent supported secrets reaching
+the remote. If a real secret was pushed, rotate it even when CI blocks the merge.
+
 ### First installation of the updater or manual upgrades
 
-Version 1.2.0 introduces the installer, its separate staff permission and cleanup
-task. An older installation must receive this version manually first.
+Version 1.2.0 introduced the installer, its separate staff permission and cleanup
+task. Bootstrap an older installation with **1.2.3 or newer** manually first.
 
 Take an operator-managed backup, deploy the complete replacement plugin directory, then use
 Blesta's **Upgrade** action before running the plugin. Avoid mixing old and new
 files; reload PHP or its opcode cache as required by the hosting environment.
 Customized email templates and existing automation schedules are preserved.
 
+### Repairing a partial installation or blank feedback
+
+Version 1.2.0 could return HTTP 500 after Blesta had inserted its installed-plugin
+row: plugin model method names collided with inherited database transaction
+methods. Version 1.2.1 fixes those declarations; 1.2.2 also fixes native message
+view resolution, feedback across redirects and the option-list byte calculation.
+
+Deploy the complete current plugin directory and use Blesta's normal
+**Upgrade** action on the existing installed entry. Do not remove plugin tables
+to repair the registry row. If navigation or access is missing, grant **Manage
+Council Sync** to the intended staff group. Open its staff-navigation page and
+use **Update now** for a council import; **Install plugin update** is a separate
+software operation. Blesta's **Tools > Logs > System** shows native exceptions;
+redact credentials and account details before sharing logs.
+
 ### Installing a published release
+
+The installer and rollback trials are implemented and fixture-tested, but actual
+licensed Blesta/PHP-FPM installation and recovery trials remain unverified.
+Review the [verification status](#verification-status) before relying on them.
 
 1. Open **Software updates** with the separate software permission.
 2. Provide an existing, empty, dedicated private directory outside **every**
@@ -210,10 +305,17 @@ Customized email templates and existing automation schedules are preserved.
    in a fresh request. Use **Finish software changes** if automatic continuation
    is unavailable.
 
-Downloads are pinned to the published release tag's immutable commit, not `main`
-or another moving branch. Only `plugins/council_sync` is installed. There is no
-GitHub token or arbitrary download-URL setting. Missing releases, incomplete or
-unsafe archives, unsupported schemas and failed checks stop the operation.
+The installer selects exactly `council-sync-X.Y.Z.zip` from the stable release's
+uploaded assets, verifies GitHub's published SHA-256 and size, then checks the
+archive's manifest version and updater protocol. It accepts a direct API download
+or one HTTPS redirect to `release-assets.githubusercontent.com`; unknown hosts,
+credentials in redirect URLs and further redirects are refused.
+
+Only `council_sync/` is installed, including its three documents. The installer
+does not use a moving branch or the generated source-code archive. There is no
+GitHub token or arbitrary download-URL setting. Missing/digest-less assets,
+incomplete or unsafe archives, unsupported schemas and failed checks stop the
+operation while retaining incomplete recovery state.
 
 ### The trial banner
 
@@ -277,46 +379,105 @@ for **all companies**, not just the current company.
 
 ## Development and testing
 
-With PHP 8.3, PDO SQLite and ZipArchive available, run from the repository root:
+With PHP CLI 8.3, cURL, PDO SQLite, ZipArchive and `proc_open` enabled, plus Python
+3.9 or newer for release tooling, run from the source repository root:
 
 ```text
 cd tests
 php check.php
+cd ..
+python -m unittest discover -s tests -p test_release.py
 ```
 
 The suite checks PHP/PDT syntax and exercises parsing, conflict resolution,
 transactions, notifications, release checks, update trials, scoped restore,
-hostile-input validation, archive validation and forms with synthetic data, mocked HTTP and Blesta model
-stand-ins. No running Blesta installation or live external service is required.
+hostile-input validation, archive validation and forms with synthetic data,
+mocked HTTP/Blesta models and a loopback asset-transport server. Python checks
+release gates, workflow outputs, draft publication order and exact ZIP structure.
+No running Blesta installation or live external service is required.
 
-For optional native updater tests, set `COUNCIL_SOFTWARE_TEST_DSN` to
+For optional MySQL-backed updater fixtures, set `COUNCIL_SOFTWARE_TEST_DSN` to
 `mysql:host=127.0.0.1;port=PORT`, with `COUNCIL_SOFTWARE_TEST_USER` and
 `COUNCIL_SOFTWARE_TEST_PASSWORD`, and enable PDO MySQL. Use only a disposable server:
 the fixtures create and drop random test databases. Other tests still use SQLite.
 Windows fixtures bypass the production installer's POSIX guard; file-permission
 behavior must be tested on a POSIX filesystem.
 
-The latest 2026-11-13 run passed **100 tests and 23 syntax checks** on Linux,
-PHP 8.3.36 and SQLite with read-only source mounts and networking disabled.
+### Test data safety
+
+The bundled tests use synthetic records and reserved example email domains, not
+live client data or service credentials. MySQL fixtures accept only an explicitly
+configured disposable loopback server and create random test databases there.
+Use dedicated test credentials; never supply production credentials or customer
+data. Customized fixtures and third-party diagnostic messages should still be
+treated as potentially private rather than assuming every possible log is redacted.
+
+On 2026-11-13, all 31 publishable files, reachable Git history and captured output
+from the normal suite plus invalid-DSN/connection-failure probes passed redacted
+secret scans. Synthetic credential canaries did not appear in those outputs,
+even with PHP exception arguments enabled. Tests ran with networking disabled,
+read-only source and ephemeral scratch storage. This checks those paths, not
+arbitrary future fixtures or every database-driver error.
+
+### Verification status
+
+The 1.2.3 validation on 2026-11-14 passed **108 PHP tests and 23 syntax checks**
+on Linux/PHP 8.3.36/SQLite with read-only source mounts and external networking
+disabled. **13 Python release tests** passed on Windows/Python 3.14, and actionlint
+1.7.12 accepted the workflow. The real generated ZIP contained exactly 19 runtime
+files plus three documents; the production extractor accepted it as version 1.2.3.
+Asset metadata, SHA-256/size mismatches, redirect restrictions, archive shape and
+actual loopback HTTP header/body handling are covered.
+
+GitHub-hosted workflow execution, real publication/download and licensed 1.2.3
+software-update/rollback trials remain unrun. The local suite does not certify them.
+
+After a reported manual reinstall on 2026-11-14, a licensed session confirmed
+both registered and on-disk versions as 1.2.3. The main, empty History and idle
+Software updates pages returned HTTP 200. Restored test settings produced visible
+native save feedback and persisted on a fresh request; no private backup directory
+or software trial was configured. These checks did not synchronize councils,
+remap clients, send notifications or download/install software.
+
+The earlier 1.2.2 run on 2026-11-13 passed 102 tests/23 syntax checks.
 The sanitation cases cover encoded/raw markup, controls, UTF-8, exact size/count
 boundaries, safe punctuation, staged-preview validation, no-change failures and
-payload-free notifications. The view regression also checks all five management
-screens use the staff widget helper and display Blesta's framework feedback.
+payload-free notifications, including the exact 65,535/65,536-byte native
+PHP-serialization boundary. The view regressions check all five management
+screens use the staff widget helper, retain the core feedback view context and
+preserve success/error flashes across redirects. Both model declarations also
+loaded against the original readable database parent; the test parent now exposes
+its inherited transaction signatures to catch the original lifecycle failure.
 Separately, one fetched public API response produced
 the same 240 labels/slugs and output digest before and after validation changes.
 That comparison is not a live Blesta or hosting-account integration test.
 
-An actual local Blesta 6.0.4 installation was attempted from the vendor ZIP on
-Apache/PHP 8.3.36, ionCube 15.5.1 and MySQL 8.4.13. Database installation completed,
-but license activation was rejected and no licensed staff session was obtained.
-Consequently, native plugin installation, UI appearance, ACLs, encryption and
-Support Manager behavior are still unverified. A ZIP alone is not sufficient:
-integration testing needs a license accepted for the test hostname.
+A licensed remote session on 2026-11-13 verified, under one company:
+
+- Repair upgrade to 1.2.1, uninstall/reinstall with purge disabled, and upgrade to
+  1.2.2; the three cron tasks and staff navigation registered.
+- Settings persistence, inline rejection of an invalid contact without changing
+  the saved value, redirected success feedback and a safe no-operation error flash.
+- A real hosting-account Wikipedia fetch. The existing unencrypted Council field
+  already matched all **240 nonempty, unique options**; the zero-change result
+  correctly created no audit batch.
+- Main, no-conflict Resolve, empty History and idle Software updates pages.
+  The software page showed the 48-hour default without creating a trial.
+- Native dark/light theme inheritance for widgets, controls and fonts; the
+  original theme preference was restored.
+
+Those earlier licensed checks predate the limited manual 1.2.3 verification above.
+
+This was Blesta 6.0.4 with owner-reported PHP 8.3, not verification of the remote
+PHP patch version. It did not exercise applied option changes, native remaps/data
+rollback, encrypted client values, multiple companies, concurrent writes,
+notification delivery, Support Manager tickets or actual software update trials.
+No synthetic clients, staff or tickets were created.
 
 The management pages now use Blesta's `Widget` helper for their shell/navigation
 and its existing Bootstrap controls and messages. Colors, fonts and dark/light
-presentation are inherited, not overridden by plugin styles. Actual visual
-confirmation remains part of licensed integration testing.
+presentation are inherited, not overridden by plugin styles. The native check
+above covers the installed staff theme, not every third-party theme or mobile size.
 
 The earlier 1.2.0 updater run passed **86 tests and 23 syntax checks** in each of four
 configurations: PHP 8.3.36 on Windows/Linux with SQLite or MySQL-backed updater
@@ -324,13 +485,25 @@ fixtures (MySQL 8.4.13). Linux exercised real POSIX permissions; native MySQL
 exercised schema-changing restoration, scoped metadata and advisory locking.
 Generated-banner browser checks covered the countdown, confirmations, schema
 gating, expiry and removal. This is not live Blesta/PHP-FPM certification:
-actual upgrades, system encryption, staff ACLs/theme, cron, SMTP, Support Manager,
-opcode-cache reloads and hosting-account requests remain integration work.
+software update trials, system encryption, comprehensive staff ACLs, scheduled
+execution, SMTP, Support Manager and opcode-cache reloads remain integration work.
+Those four-configuration results predate 1.2.1/1.2.2; Windows/MySQL suites were
+not rerun for these patches. Earlier milestones are recorded in the
+[changelog](./CHANGELOG.md).
+
+### Contributor compatibility
 
 Release authors must retain the updater protocol-1 entry points and declare their
 runtime tables in `config.json`. Same-schema releases must retain compatible stored
 data formats for preserve-data rollback; structural schema comparison cannot prove
 semantic compatibility. Breaking this contract requires a manual upgrade.
+
+Blesta's model parent inherits database transaction methods. Keep domain actions
+named `rollbackBatch`, `rollbackUpdate` and `commitUpdate`, not `rollback` or
+`commit`. Retain the core view context until framework feedback is prepared;
+select plugin PDTs for the final render and use flashes before redirects.
+Blesta's client-field model stores options using PHP serialization; plugin audit
+snapshots intentionally use JSON.
 
 See the [Blesta plugin documentation](https://docs.blesta.com/developers/plugins/)
 for framework conventions. Keep credentials, client data, database dumps and

@@ -8,13 +8,13 @@ class CouncilSyncController extends AppController
     public function preAction()
     {
         $this->structure->setDefaultView(APPDIR);
+        $this->view->setDefaultView(APPDIR);
         parent::preAction();
         $this->portal = 'admin';
         $this->requireLogin();
         $this->syncCompany = (int) Configure::get('Blesta.company_id');
         $this->syncStaff = (int) $this->Session->read('blesta_staff_id');
         Language::loadLang(['admin_main', 'council_sync'], null, __DIR__ . DIRECTORY_SEPARATOR . 'language' . DIRECTORY_SEPARATOR);
-        $this->view->setView(null, 'council_sync.default');
         $this->helpers(['Form', 'Html']);
     }
 
@@ -33,10 +33,14 @@ class CouncilSyncController extends AppController
         }
     }
 
-    protected function syncError(CouncilSyncIssue|PDOException|JsonException $error): void
+    protected function syncError(CouncilSyncIssue|PDOException|JsonException $error, bool $flash = false): void
     {
         $text = $error instanceof CouncilSyncIssue ? $error->description() : Language::_('CouncilSync.!error.database', true);
-        $this->setMessage('error', $this->Html->safe($text));
+        if ($flash) {
+            $this->flashMessage('error', $this->Html->safe($text));
+        } else {
+            $this->setMessage('error', $this->Html->safe($text));
+        }
         if (!($error instanceof CouncilSyncIssue)) {
             error_log('COUNCIL_SYNC_ADMIN_FAILED company_id=' . $this->syncCompany . ' reason=database');
         }

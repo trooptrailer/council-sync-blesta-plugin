@@ -326,7 +326,7 @@ class CouncilSync extends CouncilSyncModel
         if (count($values) !== count($options)) {
             throw new CouncilSyncIssue('collision', 'collision');
         }
-        if (strlen(json_encode($values, JSON_THROW_ON_ERROR)) > self::MAX_OPTIONS_BYTES) {
+        if (strlen(serialize($values)) > self::MAX_OPTIONS_BYTES) {
             self::rejectContent('options', 'serialized_size');
         }
     }
@@ -555,6 +555,33 @@ class CouncilSync extends CouncilSyncModel
         }
         $release = self::parseRelease($response['body']);
         $tag = substr($release['url'], strlen('https://github.com/' . self::REPOSITORY . '/releases/tag/'));
+        $data = json_decode($response['body'], true);
+        $name = 'council-sync-' . $release['version'] . '.zip';
+        $assets = [];
+        if (!is_array($data['assets'] ?? null)) {
+            throw new CouncilSyncIssue('software', 'software_download');
+        }
+        foreach ($data['assets'] as $asset) {
+            if (is_array($asset) && ($asset['name'] ?? null) === $name) {
+                $assets[] = $asset;
+            }
+        }
+        if (count($assets) !== 1) {
+            throw new CouncilSyncIssue('software', 'software_download');
+        }
+        $asset = $assets[0];
+        if (
+            !is_int($asset['id'] ?? null) || $asset['id'] < 1
+            || !is_int($asset['size'] ?? null) || $asset['size'] < 1 || $asset['size'] > 16777216
+            || ($asset['state'] ?? null) !== 'uploaded'
+            || !is_string($asset['digest'] ?? null) || !preg_match('~^sha256:[a-f0-9]{64}$~D', $asset['digest'])
+            || ($asset['url'] ?? null) !== 'https://api.github.com/repos/' . self::REPOSITORY . '/releases/assets/' . $asset['id']
+            || ($asset['browser_download_url'] ?? null) !== 'https://github.com/' . self::REPOSITORY
+                . '/releases/download/' . $tag . '/' . $name
+        ) {
+            throw new CouncilSyncIssue('software', 'software_download');
+        }
+        $release['asset'] = ['id' => $asset['id'], 'size' => $asset['size'], 'sha256' => substr($asset['digest'], 7)];
         $path = 'git/ref/tags/' . rawurlencode($tag);
         for ($depth = 0; $depth < 5; $depth++) {
             $response = $this->httpGet(
@@ -1130,7 +1157,7 @@ class CouncilSync extends CouncilSyncModel
         return $items;
     }
 
-    public function rollback(int $company, int $id, int $staff): int
+    public function rollbackBatch(int $company, int $id, int $staff): int
     {
         if ($staff < 1) {
             throw new CouncilSyncIssue('storage', 'company');

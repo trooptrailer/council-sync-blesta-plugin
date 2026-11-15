@@ -101,12 +101,20 @@ class TestSoftware extends CouncilSyncSoftware
         }
     }
     protected function refreshNavigation(): void {}
-    protected function download(string $commit, string $path): void
+    protected function downloadRequest(string $url, $stream): array
     {
-        if ($this->downloadFails || !$this->archive || !copy($this->archive, $path)) {
+        if ($this->downloadFails || !$this->archive) {
             throw new CouncilSyncIssue('software', 'software_download');
         }
-        chmod($path, 0600);
+        $source = fopen($this->archive, 'rb');
+        try {
+            if (stream_copy_to_stream($source, $stream) === false) {
+                throw new RuntimeException('Unable to copy the synthetic release asset.');
+            }
+        } finally {
+            fclose($source);
+        }
+        return ['status' => 200, 'location' => null];
     }
     protected function removeTree(string $directory): void
     {
@@ -169,12 +177,18 @@ function softwareZip(string $directory, string $path, array $extra = []): void
     $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($directory, FilesystemIterator::SKIP_DOTS));
     foreach ($files as $file) {
         $relative = str_replace('\\', '/', substr($file->getPathname(), strlen($directory) + 1));
-        $zip->addFile($file->getPathname(), 'repo-commit/plugins/council_sync/' . $relative);
+        $zip->addFile($file->getPathname(), 'council_sync/' . $relative);
     }
     foreach ($extra as $name => $content) {
-        $zip->addFromString('repo-commit/plugins/council_sync/' . $name, $content);
+        $zip->addFromString('council_sync/' . $name, $content);
     }
     $zip->close();
+}
+
+function archiveAsset(string $path): array
+{
+    clearstatcache(true, $path);
+    return ['id' => 1, 'size' => filesize($path), 'sha256' => hash_file('sha256', $path)];
 }
 
 function softwareRig(callable $operation): void
@@ -213,7 +227,7 @@ function softwareRig(callable $operation): void
                 PRIMARY KEY (client_field_id,client_id))');
             $record->insert('client_fields', [
                 'id' => 1, 'client_group_id' => 1, 'name' => 'Council', 'link' => null, 'is_lang' => 0, 'type' => 'select',
-                'values' => '{"Old":"old"}', 'default' => null, 'regex' => null, 'show_client' => 1, 'read_only' => 0, 'encrypted' => 1
+                'values' => serialize(['Old' => 'old']), 'default' => null, 'regex' => null, 'show_client' => 1, 'read_only' => 0, 'encrypted' => 1
             ]);
             $record->insert('client_values', ['client_field_id' => 1, 'client_id' => 1, 'value' => 'enc:' . base64_encode('old'), 'encrypted' => 1]);
             $record->pdo->exec("UPDATE council_sync_settings SET field_id = 1, staff_group_id = 1, contact = 'https://example.com/contact'");
@@ -256,7 +270,10 @@ function softwareRig(callable $operation): void
         $manager = new SoftwareManager($model->Record, $directory);
         $software = new TestSoftware($model->Record, $model, $manager, $directory, $base . '/web');
         $software->archive = $base . '/release.zip';
-        $model->installRelease = ['version' => '2.0.0', 'commit' => str_repeat('a', 40)];
+        $model->installRelease = [
+            'version' => '2.0.0', 'commit' => str_repeat('a', 40),
+            'asset' => archiveAsset($base . '/release.zip')
+        ];
         $software->saveConfiguration(1, 1, ['backup_dir' => $base . '/private', 'window_hours' => '48', 'confirm_private' => '1']);
         $operation($software, $model, $base, $manager);
     } finally {
@@ -312,7 +329,7 @@ test('commit removes backup and management banner without reverting data', funct
     softwareRig(function ($software, $model, $base) {
         $trial = installTrial($software);
         $model->Record->query("UPDATE council_sync_settings SET max_drop = 25");
-        $software->commit(1, 1, $trial['id']);
+        $software->commitUpdate(1, 1, $trial['id']);
         same(null, $software->banner());
         same(false, is_dir($base . '/private/' . $trial['id']));
         same(25, $model->settings(1)['max_drop']);
@@ -326,7 +343,7 @@ test('data-preserving software rollback retains current settings and unrelated b
         $model->Record->query('UPDATE council_sync_settings SET max_drop = 30');
         $model->Record->query("INSERT INTO invoices VALUES (1,'New invoice')");
         $model->Record->query("UPDATE emails SET subject = 'New customization' WHERE id = 1");
-        $software->rollback(1, 1, $trial['id'], 'preserve');
+        $software->rollbackUpdate(1, 1, $trial['id'], 'preserve');
         same('rollback_ready', $software->banner()['phase']);
         $software->finish(1, 1, $trial['id']);
         same(null, $software->banner());
@@ -349,11 +366,11 @@ test('changed schema blocks preserve mode; scoped snapshot restoration leaves un
         };
         $trial = installTrial($software);
         same(false, $trial['can_preserve']);
-        issue('software_preserve', fn() => $software->rollback(1, 1, $trial['id'], 'preserve'));
+        issue('software_preserve', fn() => $software->rollbackUpdate(1, 1, $trial['id'], 'preserve'));
         $model->Record->query('UPDATE council_sync_settings SET max_drop = 50');
         $model->Record->query("UPDATE emails SET subject = 'After' WHERE id = 1");
         $model->Record->query("INSERT INTO invoices VALUES (1,'Keep this')");
-        $software->rollback(1, 1, $trial['id'], 'restore');
+        $software->rollbackUpdate(1, 1, $trial['id'], 'restore');
         $software->finish(1, 1, $trial['id']);
         same(null, $software->banner());
         same(10, $model->settings(1)['max_drop']);
@@ -385,7 +402,7 @@ test('expired rollback is rejected even before the cleanup cron runs', function 
     softwareRig(function ($software) {
         $trial = installTrial($software);
         $software->clock += 172800;
-        issue('software_expired', fn() => $software->rollback(1, 1, $trial['id'], 'restore'));
+        issue('software_expired', fn() => $software->rollbackUpdate(1, 1, $trial['id'], 'restore'));
         same(null, $software->banner());
     });
 });
@@ -411,7 +428,7 @@ test('failed install retains recovery after 48 hours and can be explicitly disca
         $software->cleanup();
         same(true, is_dir($base . '/private/' . $failed['id']));
         same('failed', $software->banner()['phase']);
-        $software->commit(1, 1, $failed['id']);
+        $software->commitUpdate(1, 1, $failed['id']);
         same(null, $software->banner());
         same('1.2.0', $model->Record->query('SELECT version FROM plugins WHERE id = 1')->fetchColumn());
     });
@@ -432,7 +449,7 @@ test('archive extraction rejects traversal, unsafe PHP and case-colliding payloa
     softwareRig(function ($software, $model, $base) {
         foreach ([
             ['../escape.php' => '<?php'],
-            ['bad.php' => '<?php function ('],
+            ['models/bad.php' => '<?php function ('],
             ['CONFIG.json' => '{}']
         ] as $index => $extra) {
             softwareZip($base . '/source', $base . '/bad.zip', $extra);
@@ -442,14 +459,197 @@ test('archive extraction rejects traversal, unsafe PHP and case-colliding payloa
     });
 });
 
+test('release ZIP installs bundled docs while repository-shaped archives and test files are rejected', function () {
+    softwareRig(function ($software, $model, $base) {
+        foreach (['README.md', 'LICENSE', 'CHANGELOG.md'] as $name) {
+            copy(dirname(__DIR__) . '/' . $name, $base . '/source/' . $name);
+        }
+        softwareZip($base . '/source', $base . '/docs.zip');
+        $software->archive = $base . '/docs.zip';
+        $model->installRelease['asset'] = archiveAsset($software->archive);
+        installTrial($software);
+        foreach (['README.md', 'LICENSE', 'CHANGELOG.md'] as $name) {
+            same(true, is_file($base . '/web/plugins/council_sync/' . $name));
+        }
+        $zip = new ZipArchive();
+        $zip->open($base . '/docs.zip');
+        $names = [];
+        for ($i = 0; $i < $zip->numFiles; $i++) {
+            $names[] = $zip->getNameIndex($i);
+        }
+        foreach ($names as $name) {
+            $zip->renameName($name, 'repo-commit/plugins/' . $name);
+        }
+        $zip->close();
+        issue('software_archive', fn() => CouncilSyncSoftware::extract($base . '/docs.zip', $base . '/old-shape'));
+        softwareZip($base . '/source', $base . '/tests.zip', ['tests/private.php' => '<?php']);
+        issue('software_archive', fn() => CouncilSyncSoftware::extract($base . '/tests.zip', $base . '/test-files'));
+    });
+});
+
+test('release asset checksum mismatch retains recovery state without swapping plugin files', function () {
+    softwareRig(function ($software, $model, $base) {
+        $model->installRelease['asset']['sha256'] = str_repeat('0', 64);
+        issue('software_download', fn() => $software->install(1, 1, '2.0.0'));
+        same('failed', $software->banner()['phase']);
+        same('1.2.0', CouncilSyncSoftware::package($base . '/web/plugins/council_sync')['version']);
+        same('old', $model->Clients->getCustomFieldValues(1)[0]->value);
+    });
+});
+
+class AssetDownloadProbe extends CouncilSyncSoftware
+{
+    public array $responses = [];
+    public array $urls = [];
+    public function __construct() {}
+    protected function downloadRequest(string $url, $stream): array
+    {
+        $this->urls[] = $url;
+        if (!$this->responses) {
+            throw new RuntimeException('Unexpected release asset request.');
+        }
+        $response = array_shift($this->responses);
+        if ($response['status'] === 200) {
+            fwrite($stream, $response['body']);
+        }
+        return $response;
+    }
+    public function fetch(array $release, string $path): void { parent::download($release, $path); }
+}
+
+class AssetWireProbe extends CouncilSyncSoftware
+{
+    public function __construct() {}
+    public function transfer(string $url, $stream): array { return parent::downloadRequest($url, $stream); }
+}
+
+test('asset HTTP transport parses response headers, discards redirect bodies and rejects duplicate locations', function () {
+    softwareRig(function ($software, $model, $base) {
+        $listener = stream_socket_server('tcp://127.0.0.1:0', $errno, $message);
+        $address = stream_socket_get_name($listener, false);
+        fclose($listener);
+        $router = $base . '/asset-router.php';
+        file_put_contents($router, <<<'PHP'
+<?php
+$path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+if ($path === '/redirect' || $path === '/duplicate') {
+    http_response_code(302);
+    header('Location: https://release-assets.githubusercontent.com/example', false);
+    if ($path === '/duplicate') {
+        header('Location: https://release-assets.githubusercontent.com/other', false);
+    }
+    echo 'Discard this redirect response body.';
+} else {
+    header('Content-Type: application/octet-stream');
+    echo 'Synthetic asset response.';
+}
+PHP
+        );
+        $process = proc_open([PHP_BINARY, '-S', $address, $router], [
+            0 => ['pipe', 'r'], 1 => ['file', $base . '/asset-server.log', 'a'],
+            2 => ['file', $base . '/asset-server.log', 'a']
+        ], $pipes, $base, []);
+        if (!is_resource($process)) {
+            throw new RuntimeException('Unable to start the loopback asset test server.');
+        }
+        fclose($pipes[0]);
+        try {
+            $deadline = microtime(true) + 5;
+            do {
+                $ready = str_contains(file_get_contents($base . '/asset-server.log'), 'Development Server');
+                if ($ready || !proc_get_status($process)['running']) {
+                    break;
+                }
+                usleep(10000);
+            } while (microtime(true) < $deadline);
+            same(true, $ready);
+            $probe = new AssetWireProbe();
+            foreach (['ok', 'redirect', 'duplicate'] as $route) {
+                $stream = fopen($base . '/wire-' . $route, 'x+b');
+                try {
+                    if ($route === 'duplicate') {
+                        issue('software_download', fn() => $probe->transfer('http://' . $address . '/' . $route, $stream));
+                    } else {
+                        $result = $probe->transfer('http://' . $address . '/' . $route, $stream);
+                        same($route === 'ok' ? 200 : 302, $result['status']);
+                        rewind($stream);
+                        same($route === 'ok' ? 'Synthetic asset response.' : '', stream_get_contents($stream));
+                        if ($route === 'redirect') {
+                            same('https://release-assets.githubusercontent.com/example', $result['location']);
+                        }
+                    }
+                } finally {
+                    fclose($stream);
+                }
+            }
+        } finally {
+            proc_terminate($process);
+            proc_close($process);
+        }
+    });
+});
+
+test('release assets accept direct or one approved HTTPS redirect and verify exact bytes', function () {
+    softwareRig(function ($software, $model, $base) {
+        $body = 'Synthetic release bytes.';
+        $release = ['asset' => ['id' => 42, 'size' => strlen($body), 'sha256' => hash('sha256', $body)]];
+        foreach ([false, true] as $redirect) {
+            $probe = new AssetDownloadProbe();
+            if ($redirect) {
+                $probe->responses[] = ['status' => 302, 'location' => 'https://release-assets.githubusercontent.com/example?test=1'];
+            }
+            $probe->responses[] = ['status' => 200, 'body' => $body];
+            $probe->fetch($release, $base . '/transport-' . (int) $redirect . '.zip');
+            same('https://api.github.com/repos/' . CouncilSync::REPOSITORY . '/releases/assets/42', $probe->urls[0]);
+            same($redirect ? 2 : 1, count($probe->urls));
+        }
+        foreach ([
+            ['size' => strlen($body) + 1],
+            ['sha256' => str_repeat('0', 64)]
+        ] as $index => $invalid) {
+            $probe = new AssetDownloadProbe();
+            $probe->responses[] = ['status' => 200, 'body' => $body];
+            issue('software_download', fn() => $probe->fetch(
+                ['asset' => array_merge($release['asset'], $invalid)], $base . '/mismatch-' . $index . '.zip'
+            ));
+        }
+    });
+});
+
+test('release asset redirects cannot leave the approved host or chain further redirects', function () {
+    softwareRig(function ($software, $model, $base) {
+        $release = ['asset' => ['id' => 42, 'size' => 1, 'sha256' => hash('sha256', 'x')]];
+        foreach ([
+            'http://release-assets.githubusercontent.com/file',
+            'https://release-assets.githubusercontent.com.evil.example/file',
+            'https://user:password@release-assets.githubusercontent.com/file',
+            'https://release-assets.githubusercontent.com:444/file',
+            'https://release-assets.githubusercontent.com/file#fragment',
+            'https://127.0.0.1/file'
+        ] as $index => $location) {
+            $probe = new AssetDownloadProbe();
+            $probe->responses[] = ['status' => 302, 'location' => $location];
+            issue('software_download', fn() => $probe->fetch($release, $base . '/redirect-' . $index . '.zip'));
+            same(1, count($probe->urls));
+        }
+        $probe = new AssetDownloadProbe();
+        $probe->responses = [
+            ['status' => 302, 'location' => 'https://release-assets.githubusercontent.com/first'],
+            ['status' => 302, 'location' => 'https://release-assets.githubusercontent.com/second']
+        ];
+        issue('software_download', fn() => $probe->fetch($release, $base . '/redirect-chain.zip'));
+        same(2, count($probe->urls));
+    });
+});
+
 test('purge failure remains visible and can be retried manually without restoring data', function () {
     softwareRig(function ($software, $model, $base) {
         $trial = installTrial($software);
         $software->purgeFails = true;
-        issue('software_purge', fn() => $software->commit(1, 1, $trial['id']));
+        issue('software_purge', fn() => $software->commitUpdate(1, 1, $trial['id']));
         same('purging', $software->banner()['phase']);
         $software->purgeFails = false;
-        $software->commit(1, 1, $trial['id']);
+        $software->commitUpdate(1, 1, $trial['id']);
         same(null, $software->banner());
         same(false, is_dir($base . '/private/' . $trial['id']));
     });
@@ -507,9 +707,9 @@ test('failed native upgrade does not start the clock or permit data-preserving r
         $software->clock += 200000;
         $software->cleanup();
         same(true, is_dir($base . '/private/' . $pending['id']));
-        issue('software_preserve', fn() => $software->rollback(1, 1, $pending['id'], 'preserve'));
+        issue('software_preserve', fn() => $software->rollbackUpdate(1, 1, $pending['id'], 'preserve'));
         $manager->fail = false;
-        $software->rollback(1, 1, $pending['id'], 'restore');
+        $software->rollbackUpdate(1, 1, $pending['id'], 'restore');
         $software->finish(1, 1, $pending['id']);
         same(null, $software->banner());
     });
@@ -525,7 +725,7 @@ test('a failed native finalization can be retried in a fresh request', function 
         $manager->fail = false;
         $software->finish(1, 1, $pending['id']);
         same(172800, $software->banner()['remaining']);
-        $software->commit(1, 1, $pending['id']);
+        $software->commitUpdate(1, 1, $pending['id']);
     });
 });
 
@@ -534,10 +734,10 @@ test('backup corruption is detected before restoring any live data', function ()
         $trial = installTrial($software);
         $model->Record->query('UPDATE council_sync_settings SET max_drop = 31');
         file_put_contents($base . '/private/' . $trial['id'] . '/core_emails.gz', 'damaged');
-        issue('software_snapshot', fn() => $software->rollback(1, 1, $trial['id'], 'restore'));
+        issue('software_snapshot', fn() => $software->rollbackUpdate(1, 1, $trial['id'], 'restore'));
         same(31, $model->settings(1)['max_drop']);
         same('2.0.0', $model->Record->query('SELECT version FROM plugins WHERE id = 1')->fetchColumn());
-        $software->commit(1, 1, $trial['id']);
+        $software->commitUpdate(1, 1, $trial['id']);
         same(null, $software->banner());
     });
 });
@@ -549,10 +749,11 @@ test('restore mode removes newly declared plugin tables but never unrelated tabl
         $package['software_update']['data_tables'][] = 'council_sync_added';
         file_put_contents($file, json_encode($package));
         softwareZip($base . '/source', $base . '/release.zip');
+        $model->installRelease['asset'] = archiveAsset($base . '/release.zip');
         $manager->migration = static fn($pdo) => $pdo->exec('CREATE TABLE council_sync_added (id INTEGER PRIMARY KEY, value TEXT)');
         $trial = installTrial($software);
         same(false, $trial['can_preserve']);
-        $software->rollback(1, 1, $trial['id'], 'restore');
+        $software->rollbackUpdate(1, 1, $trial['id'], 'restore');
         $software->finish(1, 1, $trial['id']);
         same(null, $software->banner());
         $store = $model->Record->pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql'
@@ -576,8 +777,8 @@ test('archive extraction rejects symbolic-link payloads', function () {
     softwareRig(function ($software, $model, $base) {
         $zip = new ZipArchive();
         $zip->open($base . '/release.zip');
-        $zip->addFromString('repo-commit/plugins/council_sync/linked.php', '../outside');
-        $zip->setExternalAttributesName('repo-commit/plugins/council_sync/linked.php', ZipArchive::OPSYS_UNIX, 0120777 << 16);
+        $zip->addFromString('council_sync/models/linked.php', '../outside');
+        $zip->setExternalAttributesName('council_sync/models/linked.php', ZipArchive::OPSYS_UNIX, 0120777 << 16);
         $zip->close();
         issue('software_archive', fn() => CouncilSyncSoftware::extract($base . '/release.zip', $base . '/linked'));
     });
@@ -587,8 +788,9 @@ test('a release missing recovery dependencies is rejected before replacing insta
     softwareRig(function ($software, $model, $base) {
         $zip = new ZipArchive();
         same(true, $zip->open($base . '/release.zip'));
-        same(true, $zip->deleteName('repo-commit/plugins/council_sync/models/software_snapshot.php'));
+        same(true, $zip->deleteName('council_sync/models/software_snapshot.php'));
         same(true, $zip->close());
+        $model->installRelease['asset'] = archiveAsset($base . '/release.zip');
         issue('software_protocol', fn() => $software->install(1, 1, '2.0.0'));
         same('1.2.0', CouncilSyncSoftware::package($base . '/web/plugins/council_sync')['version']);
         same('1.2.0', $model->Record->query('SELECT version FROM plugins WHERE id = 1')->fetchColumn());
@@ -610,14 +812,43 @@ class SoftwareTagProbe extends TestCouncilSync
     }
 }
 
+function releaseAssetFixture(): array
+{
+    return [
+        'id' => 1, 'name' => 'council-sync-2.0.0.zip', 'size' => 100, 'state' => 'uploaded',
+        'digest' => 'sha256:' . str_repeat('c', 64),
+        'url' => 'https://api.github.com/repos/' . CouncilSync::REPOSITORY . '/releases/assets/1',
+        'browser_download_url' => 'https://github.com/' . CouncilSync::REPOSITORY . '/releases/download/v2.0.0/council-sync-2.0.0.zip'
+    ];
+}
+
 test('software archives resolve the release tag to an immutable commit, not empty main', function () {
     $base = database([]);
     $model = new SoftwareTagProbe($base->Record, $base->Clients);
-    $model->release('v2.0.0');
+    $model->release('v2.0.0', [releaseAssetFixture()]);
     $model->objects = [['type' => 'tag', 'sha' => str_repeat('a', 40)], ['type' => 'commit', 'sha' => str_repeat('b', 40)]];
     same(str_repeat('b', 40), $model->softwareRelease()['commit']);
     same('https://api.github.com/repos/' . CouncilSync::REPOSITORY . '/git/ref/tags/v2.0.0', $model->paths[0]);
     same('https://api.github.com/repos/' . CouncilSync::REPOSITORY . '/git/tags/' . str_repeat('a', 40), $model->paths[1]);
+});
+
+test('one-click installation requires the uniquely named uploaded asset with canonical URLs and digest', function () {
+    $base = database([]);
+    $model = new SoftwareTagProbe($base->Record, $base->Clients);
+    foreach ([
+        ['id' => true], ['id' => 0], ['size' => '100'], ['size' => 0], ['size' => 16777217],
+        ['state' => 'open'], ['digest' => null], ['digest' => 'sha256:' . str_repeat('z', 64)],
+        ['name' => 'other.zip'], ['url' => 'https://example.com/asset'],
+        ['browser_download_url' => 'https://github.com/' . CouncilSync::REPOSITORY . '/releases/download/v2.0.1/council-sync-2.0.0.zip']
+    ] as $invalid) {
+        $model->release('v2.0.0', [array_merge(releaseAssetFixture(), $invalid)]);
+        issue('software_download', fn() => $model->softwareRelease());
+    }
+    foreach ([[], [releaseAssetFixture(), releaseAssetFixture()]] as $assets) {
+        $model->release('v2.0.0', $assets);
+        issue('software_download', fn() => $model->softwareRelease());
+    }
+    same([], $model->paths);
 });
 
 function runSoftwareAction(AdminSoftware $controller, string $method): void
@@ -688,7 +919,7 @@ test('software settings show the release and withhold installation on unsupporte
             'install_supported' => true
         ];
         $html = $renderer->render('admin_software', $variables);
-        same(true, str_contains($html, '1.2.0 / 1.2.0 / 2.0.0'));
+        same(true, str_contains($html, '1.2.3 / 1.2.3 / 2.0.0'));
         same(true, str_contains($html, 'action="' . $uri . 'install/"'));
         same(true, str_contains($html, $renderer->Form->token($uri . 'checkupdates/')));
         $variables['install_supported'] = false;
@@ -709,7 +940,7 @@ test('management banner renders the clock and choices, then disappears after com
         same(true, str_contains($html, 'value="restore"'));
         same(true, str_contains($html, 'confirm_data_loss'));
         same(true, str_contains($html, $renderer->Form->token($variables['software_uri'] . 'rollback/')));
-        $software->commit(1, 1, $trial['id']);
+        $software->commitUpdate(1, 1, $trial['id']);
         $variables['software_trial'] = $software->banner();
         same('', $renderer->render('software_banner', $variables));
     });
@@ -763,7 +994,7 @@ test('rollback preserves original restricted files and empty directories', funct
         chmod($directory . '/private.txt', 0600);
         mkdir($directory . '/empty', 0700);
         $trial = installTrial($software);
-        $software->rollback(1, 1, $trial['id'], 'preserve');
+        $software->rollbackUpdate(1, 1, $trial['id'], 'preserve');
         $software->finish(1, 1, $trial['id']);
         same('synthetic private content', file_get_contents($directory . '/private.txt'));
         same(true, is_dir($directory . '/empty'));

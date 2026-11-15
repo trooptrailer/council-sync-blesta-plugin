@@ -1,0 +1,8 @@
+[extend]
+useDefault = true
+
+[[rules]]
+id = "blesta-trial-credential"
+description = "Blesta trial credential"
+regex = '''(?i)\bTRIAL-[A-Z0-9][A-Z0-9-]{19,}\b'''
+keywords = ["TRIAL-"]

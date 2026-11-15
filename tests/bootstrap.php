@@ -8,6 +8,10 @@ set_error_handler(static function ($severity, $message, $file, $line) {
 #[AllowDynamicProperties]
 class AppModel
 {
+    // Blesta models inherit these transaction methods from PdoConnection.
+    public function begin() { throw new LogicException('Unexpected inherited transaction call.'); }
+    public function rollBack() { throw new LogicException('Unexpected inherited transaction call.'); }
+    public function commit() { throw new LogicException('Unexpected inherited transaction call.'); }
     protected function systemEncrypt(string $value): string { return 'enc:' . base64_encode($value); }
     protected function systemDecrypt(string $value): string|false
     {
@@ -80,13 +84,14 @@ class TestCouncilSync extends CouncilSync
         return $this->response;
     }
 
-    public function release(string $tag): void
+    public function release(string $tag, array $assets = []): void
     {
         $this->releaseResponse = [
             'status' => 200,
             'body' => json_encode([
                 'tag_name' => $tag, 'draft' => false, 'prerelease' => false,
-                'html_url' => 'https://github.com/' . self::REPOSITORY . '/releases/tag/' . $tag
+                'html_url' => 'https://github.com/' . self::REPOSITORY . '/releases/tag/' . $tag,
+                'assets' => $assets
             ])
         ];
     }
@@ -289,7 +294,9 @@ class TestClients
             $company === null ? [$field] : [$field, $company]
         )->fetch();
         if ($record) {
-            $record->values = json_decode($record->values ?? '{}', true);
+            if ($record->values !== null && $record->values !== '') {
+                $record->values = unserialize($record->values, ['allowed_classes' => false]);
+            }
             $record->real_name = htmlspecialchars($record->name, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
         }
         return $record;
@@ -315,7 +322,7 @@ class TestClients
         }
         $this->Record->query(
             'UPDATE client_fields SET `values` = ?, `default` = ? WHERE id = ?',
-            [json_encode($values['values']), $default, $field]
+            [serialize($values['values']), $default, $field]
         );
     }
     public function getCustomFieldValues(int $client): array
@@ -325,6 +332,9 @@ class TestClients
             . ' ON f.id = v.client_field_id WHERE v.client_id = ?', $client
         )->fetchAll();
         foreach ($values as $field) {
+            if ($field->values !== null && $field->values !== '') {
+                $field->values = unserialize($field->values, ['allowed_classes' => false]);
+            }
             if ((int) $field->encrypted === 1 && (int) $field->value_encrypted === 1) {
                 $field->value = base64_decode(substr($field->value, 4), true);
             }
@@ -376,7 +386,7 @@ function database(array $options, array $assignments = [], bool $encrypted = fal
         latest_version TEXT, release_url TEXT, error_code TEXT)');
     $record->insert('client_fields', [
         'id' => 1, 'client_group_id' => 1, 'name' => 'Council', 'link' => null, 'is_lang' => 0, 'type' => 'select',
-        'values' => json_encode(array_flip($options)), 'default' => $default, 'regex' => null,
+        'values' => serialize(array_flip($options)), 'default' => $default, 'regex' => null,
         'show_client' => 1, 'read_only' => 0, 'encrypted' => (int) $encrypted
     ]);
     $record->insert('council_sync_settings', [

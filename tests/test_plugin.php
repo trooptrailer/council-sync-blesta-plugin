@@ -150,8 +150,9 @@ class TestForm
 class TestView
 {
     public ?string $file = null;
-    public function setView(?string $file, string $view): void { $this->file = $file; }
-    public function setDefaultView(string $path): void {}
+    public ?string $scope = null;
+    public function setView(?string $file, string $view): void { $this->file = $file; $this->scope = $view; }
+    public function setDefaultView(string $path): void { $this->scope = $path; }
     public function set(string $key, mixed $value): void {}
 }
 
@@ -165,6 +166,7 @@ class AppController
     public array $get = [];
     public array $variables = [];
     public array $messages = [];
+    public array $flashes = [];
     public bool $loginRequired = false;
     public TestSession $Session;
     public TestForm $Form;
@@ -176,7 +178,8 @@ class AppController
         $this->Session = new TestSession();
         $this->Form = new TestForm();
         $this->Html = new TestHtml();
-        $this->view = $this->structure = new TestView();
+        $this->view = new TestView();
+        $this->structure = new TestView();
     }
     public function preAction() {}
     public function requireLogin(): void { $this->loginRequired = true; }
@@ -187,6 +190,7 @@ class AppController
         $this->variables = is_array($key) ? array_merge($this->variables, $key) : array_merge($this->variables, [$key => $value]);
     }
     public function setMessage(string $kind, string $message): void { $this->messages[] = [$kind, $message]; }
+    public function flashMessage(string $kind, string $message): void { $this->flashes[] = [$kind, $message]; }
     public function redirect(string $uri): void { throw new TestRedirect($uri); }
 }
 
@@ -404,6 +408,48 @@ function runAction(AdminMain $controller, string $method): void
         $controller->variables['redirect'] = $redirect->getMessage();
     }
 }
+
+class CoreMessageContextController extends AdminMain
+{
+    public function setMessage(string $kind, string $message): void
+    {
+        if ($this->view->scope !== APPDIR) {
+            throw new RuntimeException('Core feedback was requested from the plugin view directory.');
+        }
+        parent::setMessage($kind, $message);
+    }
+}
+
+test('inline feedback uses core templates before selecting the plugin page', function () {
+    $model = database([]);
+    plugin($model);
+    $controller = new CoreMessageContextController();
+    $controller->preAction();
+    $_SERVER['REQUEST_METHOD'] = 'POST';
+    $uri = $controller->base_uri . 'plugin/council_sync/admin_main/index/';
+    $controller->post = ['contact' => 'invalid', '_csrf_token' => $controller->Form->token($uri)];
+    runAction($controller, 'index');
+    same('error', $controller->messages[0][0]);
+    same([], $controller->flashes);
+    same('admin_main', $controller->view->file);
+    same('council_sync.default', $controller->view->scope);
+});
+
+test('redirected manual updates preserve both success and failure feedback as flashes', function () {
+    foreach ([200, 429] as $status) {
+        $model = database([]);
+        $model->source([council('A', 1)]);
+        $model->response['status'] = $status;
+        $controller = controller($model);
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+        $uri = $controller->base_uri . 'plugin/council_sync/admin_main/update/';
+        $controller->post = ['_csrf_token' => $controller->Form->token($uri)];
+        runAction($controller, 'update');
+        same($status === 200 ? 'message' : 'error', $controller->flashes[0][0]);
+        same([], $controller->messages);
+        same($controller->base_uri . 'plugin/council_sync/admin_main/index/', $controller->variables['redirect']);
+    }
+});
 
 test('Blesta 6 declarations register daily cron, staff ACL and company email template', function () {
     $instance = plugin(database([]));
@@ -663,7 +709,7 @@ test('empty unset defaults remain unchanged during option updates and rollback',
     $model->source([council('X', 3)]);
     $batch = $model->synchronize(1, 'cron', null)['batch_id'];
     same('', $model->Clients->getCustomField(1)->default);
-    $model->rollback(1, $batch, 1);
+    $model->rollbackBatch(1, $batch, 1);
     same('', $model->Clients->getCustomField(1)->default);
 });
 test('CSRF validation honors a platform-configured token key', function () {
@@ -684,7 +730,7 @@ test('client-value audit copies are encrypted and unreadable copies block rollba
     same(false, $stored === 'a-tx-1');
     same('a-tx-1', $model->batchItems(1, $result['batch_id'])[0]->old_value);
     $model->Record->query("UPDATE council_sync_items SET old_value = 'unreadable'");
-    issue('audit_crypto', fn() => $model->rollback(1, $result['batch_id'], 1));
+    issue('audit_crypto', fn() => $model->rollbackBatch(1, $result['batch_id'], 1));
     same('applied', $model->batch(1, $result['batch_id'])->status);
     same('x-tx-3', $model->Clients->getCustomFieldValues(1)[0]->value);
 });
@@ -744,7 +790,7 @@ test('release transport targets the intended public API without authentication',
     same(404, $probe->fetch()['status']);
     same('https://api.github.com/repos/trooptrailer/council-sync-blesta-plugin/releases/latest', $probe->request['url']);
     same(['Accept: application/vnd.github+json', 'X-GitHub-Api-Version: 2026-03-10'], $probe->request['headers']);
-    same(true, str_contains($probe->request['agent'], 'CouncilSync-Blesta/1.2.0'));
+    same(true, str_contains($probe->request['agent'], 'CouncilSync-Blesta/1.2.3'));
 });
 
 test('release checks compare numeric versions and distinguish package, registered and remote versions', function () {
@@ -756,7 +802,7 @@ test('release checks compare numeric versions and distinguish package, registere
     $status = $model->checkForUpdates(1);
     same('outdated', $status['status']);
     same('1.9.0', $status['installed']);
-    same('1.2.0', $status['package']);
+    same('1.2.3', $status['package']);
     same('1.10.0', $status['latest']);
     same(true, $status['upgrade_required']);
     $model->PluginManager->installedVersion = CouncilSync::packageVersion();
@@ -1017,7 +1063,7 @@ test('settings display reads cached versions without making a release request', 
     $_SERVER['REQUEST_METHOD'] = 'GET';
     runAction($controller, 'index');
     same('unchecked', $controller->variables['version_status']['status']);
-    same('1.2.0', $controller->variables['version_status']['package']);
+    same('1.2.3', $controller->variables['version_status']['package']);
     same(0, $model->releaseRequests);
     same([], Loader::$models['Emails']->sent);
 });

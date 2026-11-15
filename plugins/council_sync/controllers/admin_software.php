@@ -59,7 +59,15 @@ class AdminSoftware extends CouncilSyncController
             if (!is_string($this->post['version'] ?? null)) {
                 throw new CouncilSyncIssue('software', 'software_version');
             }
-            $this->CouncilSyncSoftware->install($this->syncStaff, $this->syncCompany, $this->post['version']);
+            $commit = null;
+            if ($this->CouncilSync->developmentEnabled()) {
+                $this->confirm('confirm_development');
+                if (!is_string($this->post['commit'] ?? null) || !preg_match('~^[a-f0-9]{40}$~D', $this->post['commit'])) {
+                    throw new CouncilSyncIssue('software', 'software_version');
+                }
+                $commit = $this->post['commit'];
+            }
+            $this->CouncilSyncSoftware->install($this->syncStaff, $this->syncCompany, $this->post['version'], $commit);
             $this->redirect($this->base_uri . 'plugin/council_sync/admin_software/finish/');
             return;
         } catch (CouncilSyncIssue|PDOException|JsonException $error) {

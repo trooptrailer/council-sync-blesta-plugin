@@ -28,3 +28,7 @@ $lang['AdminSoftware.install'] = 'Install plugin update';
 $lang['AdminSoftware.install_unavailable'] = 'Configure private storage, complete any existing Blesta upgrade, and check for a newer stable release before installing. This installer must first be installed manually.';
 $lang['AdminSoftware.platform_requirement'] = 'Automatic installation requires POSIX file permissions and PHP ZipArchive. Manual deployment remains available on other hosts.';
 $lang['AdminSoftware.versions'] = 'Blesta registered / package / last verified stable release:';
+$lang['AdminSoftware.development_versions'] = 'Blesta registered / test package / last verified dev candidate:';
+$lang['AdminSoftware.development_confirm'] = 'I authorize installation of this exact unverified dev commit for a development trial';
+$lang['AdminSoftware.development_install'] = 'Back up Council Sync and install the pinned dev candidate for all companies';
+$lang['AdminSoftware.development_unavailable'] = 'Configure private storage, complete any existing native upgrade and manually check for a newer dev candidate before starting a test.';

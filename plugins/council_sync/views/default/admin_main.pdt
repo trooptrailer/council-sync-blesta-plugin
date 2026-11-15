@@ -17,23 +17,26 @@ $this->Widget->create($this->_('AdminMain.title', true), ['id' => 'council-sync-
 ?>
         <section class="border rounded p-3 mb-4">
             <h3 class="h5"><?php $this->_('AdminMain.versions'); ?></h3>
+            <?php if ($version_status['development'] ?? false) { ?>
+                <p class="alert alert-warning"><?php $this->_('AdminMain.development_warning'); ?></p>
+            <?php } ?>
             <dl>
                 <?php foreach (['installed', 'package', 'latest', 'checked_at', 'last_success_at'] as $key) { ?>
-                    <dt><?php $this->_('AdminMain.version_' . $key); ?></dt>
+                    <dt><?php $this->_('AdminMain.' . (($version_status['development'] ?? false) && $key === 'latest' ? 'development_latest' : 'version_' . $key)); ?></dt>
                     <dd><?php echo $this->Html->safe($version_status[$key] ?? $this->_('AdminMain.unknown', true)); ?></dd>
                 <?php } ?>
             </dl>
-            <p><?php $this->_('AdminMain.version_' . $version_status['status']); ?></p>
+            <p><?php $this->_('AdminMain.' . (($version_status['development'] ?? false) ? 'development_' : 'version_') . $version_status['status']); ?></p>
             <?php if ($version_status['error_code'] !== null) { ?>
                 <p class="alert alert-warning"><?php echo $this->Html->safe($version_status['error_code']); ?>
-                    <?php $this->_('AdminMain.version_private_help'); ?>
+                    <?php $this->_(($version_status['development'] ?? false) ? 'AdminMain.development_help' : 'AdminMain.version_private_help'); ?>
                 </p>
             <?php } ?>
             <?php if ($version_status['upgrade_required']) { ?>
                 <p class="alert alert-warning"><?php $this->_('AdminMain.version_upgrade_required'); ?></p>
             <?php } ?>
             <?php if ($version_status['release_url']) { ?>
-                <a href="<?php echo $this->Html->safe($version_status['release_url']); ?>" target="_blank" rel="noopener noreferrer"><?php $this->_('AdminMain.version_release'); ?></a>
+                <a href="<?php echo $this->Html->safe($version_status['release_url']); ?>" target="_blank" rel="noopener noreferrer"><?php $this->_(($version_status['development'] ?? false) ? 'AdminMain.development_commit' : 'AdminMain.version_release'); ?></a>
             <?php } ?>
             <?php $this->Form->create($sync_uri . 'checkupdates/'); ?>
             <button class="btn btn-outline-secondary mt-2" type="submit"><?php $this->_('AdminMain.check_updates'); ?></button>

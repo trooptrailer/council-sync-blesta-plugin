@@ -337,6 +337,31 @@ rollback is refused immediately; cleanup keeps the installed version and purges 
 completed trial backup. Physical deletion waits for the cleanup cron if it has not
 run yet. Failed or incomplete installations do **not** expire automatically.
 
+### Development-only bootstrap trials
+
+Normal packages check stable Releases only. A deliberately generated test bootstrap
+can set `software_update.development_branch` to exactly `dev`, with
+`development_protocol: 1`, and use a beta identifier. This flag is not a settings
+option and is absent from the normal manifest. Release packaging rejects it.
+
+The approved development bootstrap is **1.2.3-beta.1**, for testing an update to
+normal **1.2.3** without publishing a release. Before such a trial:
+
+- Take a fresh operator-managed site backup; retain plugin data when manually
+  reinstalling the bootstrap and configure dedicated private update storage.
+- Push the current support code to dev first. The target must declare
+  `development_protocol: 1` so that its installed code can restore beta backups.
+- Run a manual check, review the pinned commit and explicitly confirm development
+  installation. A changed commit requires a fresh check; it is never silently substituted.
+
+The dev downloader uses that commit's HTTPS source archive, verifies its pinned
+manifest and extracts only allowlisted plugin files plus the three documents.
+It does not have a published Release-asset digest and does not certify the
+production asset-publication path. Scheduled dev checks/notices are skipped.
+Installing the normal target removes the test flag; rollback can restore the beta
+bootstrap and flag. Dev cache entries are never displayed as stable releases.
+Keep beta packages/flags out of main and published releases.
+
 ### Backup boundary and recovery limits
 
 Snapshots contain the five runtime tables `council_sync_settings`,
@@ -432,6 +457,13 @@ actual loopback HTTP header/body handling are covered.
 GitHub-hosted workflow execution, real publication/download and licensed 1.2.3
 software-update/rollback trials remain unrun. The local suite does not certify them.
 
+The development-bootstrap follow-up on 2026-11-14 passed **116 PHP tests and
+23 syntax checks** on Linux/PHP 8.3.36/SQLite and **14 Python release tests**.
+Coverage includes fixed-dev/beta gating, commit/manifest refusal, source cache
+separation, explicit confirmation, skipped scheduled dev notices, rollback to the
+beta and rejection of test flags in normal release installs/packages.
+The live development trial remains unrun; this is still fixture coverage.
+
 After a reported manual reinstall on 2026-11-14, a licensed session confirmed
 both registered and on-disk versions as 1.2.3. The main, empty History and idle
 Software updates pages returned HTTP 200. Restored test settings produced visible
@@ -497,6 +529,9 @@ Release authors must retain the updater protocol-1 entry points and declare thei
 runtime tables in `config.json`. Same-schema releases must retain compatible stored
 data formats for preserve-data rollback; structural schema comparison cannot prove
 semantic compatibility. Breaking this contract requires a manual upgrade.
+`development_protocol: 1` is a capability declaration, not an enabled channel:
+targets declaring it must retain beta-backup recovery support. Only generated
+test bootstraps carry `development_branch: "dev"`.
 
 Blesta's model parent inherits database transaction methods. Keep domain actions
 named `rollbackBatch`, `rollbackUpdate` and `commitUpdate`, not `rollback` or

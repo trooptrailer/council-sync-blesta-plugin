@@ -10,17 +10,20 @@ $this->Widget->setLinks([
 $this->Widget->create($this->_('AdminSoftware.title', true), ['id' => 'council-sync-software']);
 ?>
         <p class="alert alert-warning"><?php $this->_('AdminSoftware.global_warning'); ?></p>
+        <?php if ($version_status['development'] ?? false) { ?>
+            <p class="alert alert-warning"><?php $this->_('AdminMain.development_warning'); ?></p>
+        <?php } ?>
         <?php if (!$install_supported) { ?>
             <p class="alert alert-warning"><?php $this->_('AdminSoftware.platform_requirement'); ?></p>
         <?php } ?>
-        <p><?php $this->_('AdminSoftware.versions'); ?>
+        <p><?php $this->_(($version_status['development'] ?? false) ? 'AdminSoftware.development_versions' : 'AdminSoftware.versions'); ?>
             <?php echo $this->Html->safe($version_status['installed'] . ' / ' . $version_status['package']
                 . ' / ' . ($version_status['latest'] ?? $this->_('AdminMain.unknown', true))); ?>
         </p>
-        <p><?php $this->_('AdminMain.version_' . $version_status['status']); ?></p>
+        <p><?php $this->_('AdminMain.' . (($version_status['development'] ?? false) ? 'development_' : 'version_') . $version_status['status']); ?></p>
         <?php if ($version_status['error_code'] !== null) { ?>
             <p class="text-warning"><?php echo $this->Html->safe($version_status['error_code']); ?>
-                <?php $this->_('AdminMain.version_private_help'); ?>
+                <?php $this->_(($version_status['development'] ?? false) ? 'AdminMain.development_help' : 'AdminMain.version_private_help'); ?>
             </p>
         <?php } ?>
         <?php if ($version_status['upgrade_required']) { ?>
@@ -52,14 +55,22 @@ $this->Widget->create($this->_('AdminSoftware.title', true), ['id' => 'council-s
                 <?php $this->Form->create($software_uri . 'install/'); ?>
                 <?php $this->Form->fieldHidden('version', $version_status['latest']); ?>
                 <p><?php echo $this->Html->safe($version_status['package'] . ' -> ' . $version_status['latest']); ?></p>
+                <?php if ($version_status['development'] ?? false) { ?>
+                    <?php $this->Form->fieldHidden('commit', $version_status['commit']); ?>
+                    <p><?php $this->_('AdminMain.development_commit'); ?>: <?php echo $this->Html->safe($version_status['commit']); ?></p>
+                    <label class="form-check">
+                        <?php $this->Form->fieldCheckbox('confirm_development', '1', false, ['class' => 'form-check-input', 'required' => 'required']); ?>
+                        <span><?php $this->_('AdminSoftware.development_confirm'); ?></span>
+                    </label>
+                <?php } ?>
                 <label class="form-check">
                     <?php $this->Form->fieldCheckbox('confirm_install', '1', false, ['class' => 'form-check-input', 'required' => 'required']); ?>
-                    <span><?php $this->_('AdminSoftware.install_confirm'); ?></span>
+                    <span><?php $this->_(($version_status['development'] ?? false) ? 'AdminSoftware.development_install' : 'AdminSoftware.install_confirm'); ?></span>
                 </label>
                 <button type="submit" class="btn btn-danger mt-2"><?php $this->_('AdminSoftware.install'); ?></button>
                 <?php $this->Form->end(); ?>
             <?php } else { ?>
-                <p class="mt-3"><?php $this->_('AdminSoftware.install_unavailable'); ?></p>
+                <p class="mt-3"><?php $this->_(($version_status['development'] ?? false) ? 'AdminSoftware.development_unavailable' : 'AdminSoftware.install_unavailable'); ?></p>
             <?php } ?>
         <?php } ?>
 <?php $this->Widget->end(); ?>

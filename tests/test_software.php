@@ -191,6 +191,22 @@ function archiveAsset(string $path): array
     return ['id' => 1, 'size' => filesize($path), 'sha256' => hash_file('sha256', $path)];
 }
 
+function developmentZip(string $directory, string $path, string $commit): void
+{
+    $zip = new ZipArchive();
+    same(true, $zip->open($path, ZipArchive::CREATE | ZipArchive::OVERWRITE));
+    $prefix = 'council-sync-blesta-plugin-' . $commit . '/';
+    foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator($directory, FilesystemIterator::SKIP_DOTS)) as $file) {
+        $relative = str_replace('\\', '/', substr($file->getPathname(), strlen($directory) + 1));
+        $zip->addFile($file->getPathname(), $prefix . 'plugins/council_sync/' . $relative);
+    }
+    foreach (['README.md', 'LICENSE', 'CHANGELOG.md'] as $name) {
+        $zip->addFile(dirname(__DIR__) . '/' . $name, $prefix . $name);
+    }
+    $zip->addFromString($prefix . 'tests/ignored.php', '<?php');
+    $zip->close();
+}
+
 function softwareRig(callable $operation): void
 {
     $base = dirname(__DIR__) . '/scratch/software-test-' . bin2hex(random_bytes(6));
@@ -305,6 +321,88 @@ function installTrial(TestSoftware $software): array
     same('trial', $trial['phase']);
     return $trial;
 }
+
+function developmentRig(callable $operation): void
+{
+    softwareRig(function ($software, $model, $base, $manager) use ($operation) {
+        $path = $base . '/web/plugins/council_sync/config.json';
+        $config = json_decode(file_get_contents($path), true);
+        $config['version'] = '1.2.3-beta.1';
+        $config['software_update']['development_branch'] = 'dev';
+        file_put_contents($path, json_encode($config));
+        $model->Record->query('UPDATE plugins SET version = ? WHERE id = 1', $config['version']);
+        $model->development = true;
+        $commit = str_repeat('d', 40);
+        developmentZip($base . '/source', $base . '/dev.zip', $commit);
+        $software->archive = $base . '/dev.zip';
+        $model->installRelease = [
+            'version' => '2.0.0', 'development' => true, 'commit' => $commit,
+            'manifest_sha256' => hash_file('sha256', $base . '/source/config.json')
+        ];
+        $operation($software, $model, $base, $manager, $commit);
+    });
+}
+
+test('beta versions require the explicit fixed-dev flag and rollback capability', function () {
+    issue('version_manifest', fn() => CouncilSync::manifestVersion(['version' => '1.2.3-beta.1']));
+    foreach ([
+        ['development_branch' => 'main', 'development_protocol' => 1],
+        ['development_branch' => 'dev'],
+        ['development_branch' => 'dev', 'development_protocol' => 2]
+    ] as $settings) {
+        issue('version_manifest', fn() => CouncilSync::manifestVersion(['version' => '1.2.3-beta.1', 'software_update' => $settings]));
+    }
+    $settings = ['development_branch' => 'dev', 'development_protocol' => 1];
+    same('1.2.3-beta.1', CouncilSync::manifestVersion(['version' => '1.2.3-beta.1', 'software_update' => $settings]));
+    same(true, version_compare('1.2.3', '1.2.3-beta.1', '>'));
+});
+
+test('a dev trial pins its commit, clears the test flag on install and restores it on rollback', function () {
+    developmentRig(function ($software, $model, $base, $manager, $commit) {
+        issue('software_version', fn() => $software->install(1, 1, '2.0.0'));
+        issue('software_version', fn() => $software->install(1, 1, '2.0.0', str_repeat('a', 40)));
+        same(null, $software->banner());
+        $software->install(1, 1, '2.0.0', $commit);
+        $software->finish(1, 1, $software->banner()['id']);
+        $config = CouncilSyncSoftware::package($base . '/web/plugins/council_sync');
+        same('2.0.0', $config['version']);
+        same(false, isset($config['software_update']['development_branch']));
+        same(false, is_dir($base . '/web/plugins/council_sync/tests'));
+        $software->rollbackUpdate(1, 1, $software->banner()['id'], 'preserve');
+        $software->finish(1, 1, $software->banner()['id']);
+        $config = CouncilSyncSoftware::package($base . '/web/plugins/council_sync');
+        same('1.2.3-beta.1', $config['version']);
+        same('dev', $config['software_update']['development_branch']);
+        same(null, $software->banner());
+        same('old', $model->Clients->getCustomFieldValues(1)[0]->value);
+    });
+});
+
+test('dev archives reject a wrong commit or manifest without replacing installed software', function () {
+    developmentRig(function ($software, $model, $base, $manager, $commit) {
+        $wrong = $model->installRelease;
+        $wrong['commit'] = str_repeat('a', 40);
+        issue('software_archive', fn() => CouncilSyncSoftware::extract($base . '/dev.zip', $base . '/wrong-commit', $wrong));
+        $model->installRelease['manifest_sha256'] = str_repeat('0', 64);
+        issue('software_development', fn() => $software->install(1, 1, '2.0.0', $commit));
+        same('failed', $software->banner()['phase']);
+        same('1.2.3-beta.1', CouncilSyncSoftware::package($base . '/web/plugins/council_sync')['version']);
+    });
+});
+
+test('a normal release cannot silently enable development updating', function () {
+    softwareRig(function ($software, $model, $base) {
+        $path = $base . '/source/config.json';
+        $config = json_decode(file_get_contents($path), true);
+        $config['software_update']['development_branch'] = 'dev';
+        file_put_contents($path, json_encode($config));
+        softwareZip($base . '/source', $base . '/release.zip');
+        $model->installRelease['asset'] = archiveAsset($base . '/release.zip');
+        issue('software_development', fn() => $software->install(1, 1, '2.0.0'));
+        same('1.2.0', CouncilSyncSoftware::package($base . '/web/plugins/council_sync')['version']);
+        same('failed', $software->banner()['phase']);
+    });
+});
 
 test('software install starts the 48-hour clock only after native upgrade succeeds', function () {
     softwareRig(function ($software, $model, $base) {
@@ -811,6 +909,128 @@ class SoftwareTagProbe extends TestCouncilSync
         return ['status' => 200, 'body' => json_encode(['object' => array_shift($this->objects)])];
     }
 }
+
+class DevelopmentMetadataProbe extends TestCouncilSync
+{
+    public array $responses = [];
+    public array $urls = [];
+    protected function httpGet(string $url, string $agent, int $limit, array $headers = ['Accept: application/json']): array
+    {
+        $this->urls[] = $url;
+        if (!$this->responses) {
+            throw new RuntimeException('Unexpected development network request.');
+        }
+        return array_shift($this->responses);
+    }
+}
+
+function developmentMetadata(DevelopmentMetadataProbe $model, ?array $manifest = null): string
+{
+    $body = json_encode($manifest ?? [
+        'version' => '1.2.3', 'software_update' => ['protocol' => 1, 'development_protocol' => 1]
+    ]);
+    $model->responses = [
+        ['status' => 200, 'body' => json_encode(['ref' => 'refs/heads/dev', 'object' => ['type' => 'commit', 'sha' => str_repeat('c', 40)]])],
+        ['status' => 200, 'body' => $body]
+    ];
+    return $body;
+}
+
+test('manual dev checks pin the manifest URL and never present dev cache as a stable release', function () {
+    $base = database([]);
+    $model = new DevelopmentMetadataProbe($base->Record, $base->Clients);
+    plugin($model);
+    $model->release('v2.0.0');
+    $model->checkForUpdates(1, true);
+    $model->development = true;
+    same('unchecked', $model->versionStatus(1)['status']);
+    $body = developmentMetadata($model);
+    $candidate = $model->developmentRelease();
+    same(hash('sha256', $body), $candidate['manifest_sha256']);
+    same('https://raw.githubusercontent.com/' . CouncilSync::REPOSITORY . '/' . str_repeat('c', 40) . '/plugins/council_sync/config.json', $model->urls[1]);
+    developmentMetadata($model);
+    $status = $model->checkForUpdates(1, true);
+    same(true, $status['development']);
+    same(str_repeat('c', 40), $status['commit']);
+    $requests = count($model->urls);
+    $plugin = new CouncilSyncPlugin();
+    $plugin->cron('updates');
+    same($requests, count($model->urls));
+    same([], Loader::$models['Emails']->sent);
+    same([], Loader::$models['SupportManagerTickets']->added);
+    $model->development = false;
+    same('unchecked', $model->versionStatus(1)['status']);
+    same(null, $model->versionStatus(1)['latest']);
+});
+
+test('dev lookup refuses other refs, invalid objects and targets unable to restore beta backups', function () {
+    $base = database([]);
+    $model = new DevelopmentMetadataProbe($base->Record, $base->Clients);
+    issue('software_development', fn() => $model->developmentRelease());
+    same([], $model->urls);
+    $model->development = true;
+    foreach ([
+        ['version' => '1.2.3', 'software_update' => ['protocol' => 1]],
+        ['version' => '1.2.3-beta.1', 'software_update' => ['protocol' => 1, 'development_protocol' => 1]],
+        ['version' => '1.2.3', 'software_update' => ['protocol' => 1, 'development_protocol' => 1, 'development_branch' => 'dev']]
+    ] as $manifest) {
+        developmentMetadata($model, $manifest);
+        issue('development_response', fn() => $model->developmentRelease());
+    }
+    foreach ([
+        ['ref' => 'refs/heads/main', 'object' => ['type' => 'commit', 'sha' => str_repeat('c', 40)]],
+        ['ref' => 'refs/heads/dev', 'object' => ['type' => 'tag', 'sha' => str_repeat('c', 40)]],
+        ['ref' => 'refs/heads/dev', 'object' => ['type' => 'commit', 'sha' => '../../other']]
+    ] as $reference) {
+        $model->responses = [['status' => 200, 'body' => json_encode($reference)]];
+        issue('development_response', fn() => $model->developmentRelease());
+    }
+});
+
+test('failed checks without any successful URL remain isolated by source', function () {
+    $base = database([]);
+    $model = new DevelopmentMetadataProbe($base->Record, $base->Clients);
+    plugin($model);
+    same('unavailable', $model->checkForUpdates(1, true)['status']);
+    $model->development = true;
+    same('unchecked', $model->versionStatus(1)['status']);
+    $model->responses = [['status' => 403, 'body' => '{}']];
+    $status = $model->checkForUpdates(1, true);
+    same('unavailable', $status['status']);
+    same('dev:http_403', $status['error_code']);
+    $model->development = false;
+    same('unchecked', $model->versionStatus(1)['status']);
+    same(null, $model->versionStatus(1)['error_code']);
+});
+
+test('dev install UI requires a separate confirmation and the displayed commit', function () {
+    developmentRig(function ($software, $model, $base, $manager, $commit) {
+        Loader::$models['CouncilSyncSoftware'] = $software;
+        $controller = new AdminSoftware();
+        $controller->preAction();
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+        $controller->post = [
+            'confirm_install' => '1', 'version' => '2.0.0', 'commit' => $commit,
+            '_csrf_token' => $controller->Form->token('/billing/admin/plugin/council_sync/admin_software/install/')
+        ];
+        runSoftwareAction($controller, 'install');
+        same(null, $software->banner());
+        $renderer = new TestRenderer();
+        $status = $model->versionStatus(1);
+        $status['status'] = 'outdated';
+        $status['latest'] = '2.0.0';
+        $status['upgrade_required'] = false;
+        $status['commit'] = $commit;
+        $html = $renderer->render('admin_software', [
+            'software_trial' => null, 'software_allowed' => true, 'software_uri' => '/billing/admin/plugin/council_sync/admin_software/',
+            'sync_uri' => '/billing/admin/plugin/council_sync/admin_main/', 'configuration' => $software->configuration(),
+            'version_status' => $status, 'install_supported' => true
+        ]);
+        same(true, str_contains($html, 'confirm_development'));
+        same(true, str_contains($html, $commit));
+        same(true, str_contains($html, 'DEVELOPMENT TEST BUILD'));
+    });
+});
 
 function releaseAssetFixture(): array
 {

@@ -64,6 +64,7 @@ class TestCouncilSync extends CouncilSync
     public int $releaseRequests = 0;
     public int $clock;
     public ?array $installRelease = null;
+    public bool $development = false;
 
     public function __construct(public TestRecord $Record, public TestClients $Clients)
     {
@@ -109,6 +110,8 @@ class TestCouncilSync extends CouncilSync
     {
         return $this->clock;
     }
+
+    public function developmentEnabled(): bool { return $this->development; }
 
     public function softwareRelease(): array
     {

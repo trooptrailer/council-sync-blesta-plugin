@@ -25,6 +25,12 @@ boundaries and [verification limits](./README.md#verification-status).
   checking its published size and SHA-256 instead of using a repository archive.
 - Asset downloads allow only GitHub's HTTPS release-asset redirect; other
   redirects and unsafe archive paths/files are rejected.
+- Added an explicit manifest-gated development bootstrap path for the approved
+  1.2.3-beta.1 trial. Stable project version remains 1.2.3; normal packages stay
+  Releases-only and release packaging rejects test flags.
+- Development trials pin the chosen dev commit/manifest, require an additional
+  confirmation, separate cached sources and skip scheduled dev checks/notices.
+  Normal targets clear the flag and must support restoring beta backups.
 
 ### Validation
 
@@ -40,6 +46,9 @@ boundaries and [verification limits](./README.md#verification-status).
 - Following a reported manual reinstall on 2026-11-14, registered/on-disk 1.2.3,
   native settings save/persistence and main/empty-history/idle-software pages were
   verified. No sync, downloads, remaps, notices or software trials were performed.
+- The later bootstrap follow-up passed 116 PHP tests/23 syntax checks and
+  14 Python release tests. Development install/rollback is still unrun on the
+  licensed host; no beta package or dev flag was committed to main or released.
 
 ## 1.2.2 - 2026-11-13
 

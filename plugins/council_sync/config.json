@@ -5,6 +5,7 @@
     "icon": "bi bi-arrow-repeat",
     "software_update": {
         "protocol": 1,
+        "development_protocol": 1,
         "data_tables": [
             "council_sync_settings",
             "council_sync_batches",

@@ -519,14 +519,39 @@ class CouncilSync extends CouncilSyncModel
         return 'CouncilSync-Blesta/' . self::packageVersion() . ' (' . self::validateContact($contact) . ') PHP/' . PHP_VERSION;
     }
 
-    public static function packageVersion(): string
+    public static function manifestVersion(array $config): string
     {
-        $config = json_decode(file_get_contents(dirname(__DIR__) . DIRECTORY_SEPARATOR . 'config.json'), true, 512, JSON_THROW_ON_ERROR);
         $version = $config['version'] ?? null;
-        if (!is_string($version) || !preg_match('~^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$~D', $version)) {
+        $branch = $config['software_update']['development_branch'] ?? null;
+        $suffix = $branch === 'dev' ? '(?:-beta\.(0|[1-9]\d*))?' : '';
+        if (
+            ($branch !== null && ($branch !== 'dev' || ($config['software_update']['development_protocol'] ?? null) !== 1))
+            || !is_string($version) || strlen($version) > 64
+            || !preg_match('~^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)' . $suffix . '$~D', $version)
+        ) {
             throw new CouncilSyncIssue('settings', 'version_manifest');
         }
         return $version;
+    }
+
+    private static function packageManifest(): array
+    {
+        $config = json_decode(file_get_contents(dirname(__DIR__) . DIRECTORY_SEPARATOR . 'config.json'), true, 512, JSON_THROW_ON_ERROR);
+        if (!is_array($config)) {
+            throw new CouncilSyncIssue('settings', 'version_manifest');
+        }
+        self::manifestVersion($config);
+        return $config;
+    }
+
+    public static function packageVersion(): string
+    {
+        return self::manifestVersion(self::packageManifest());
+    }
+
+    public function developmentEnabled(): bool
+    {
+        return (self::packageManifest()['software_update']['development_branch'] ?? null) === 'dev';
     }
 
     protected function httpRequest(string $contact): array
@@ -549,6 +574,9 @@ class CouncilSync extends CouncilSyncModel
 
     public function softwareRelease(): array
     {
+        if ($this->developmentEnabled()) {
+            return $this->developmentRelease();
+        }
         $response = $this->updateRequest();
         if ($response['status'] !== 200) {
             throw new CouncilSyncIssue('software', 'software_download');
@@ -606,6 +634,62 @@ class CouncilSync extends CouncilSyncModel
             $path = 'git/tags/' . $object['sha'];
         }
         throw new CouncilSyncIssue('software', 'software_download');
+    }
+
+    private static function developmentResponse(array $response): array
+    {
+        if ($response['status'] !== 200) {
+            throw new CouncilSyncIssue('update', 'release_http', ['status' => $response['status']]);
+        }
+        try {
+            $data = json_decode($response['body'], true, 512, JSON_THROW_ON_ERROR);
+        } catch (JsonException $error) {
+            throw new CouncilSyncIssue('update', 'development_response');
+        }
+        if (!is_array($data)) {
+            throw new CouncilSyncIssue('update', 'development_response');
+        }
+        return $data;
+    }
+
+    public function developmentRelease(): array
+    {
+        if (!$this->developmentEnabled()) {
+            throw new CouncilSyncIssue('software', 'software_development');
+        }
+        $agent = 'CouncilSync-Blesta/' . self::packageVersion() . ' (https://github.com/' . self::REPOSITORY . ')';
+        $data = self::developmentResponse($this->httpGet(
+            'https://api.github.com/repos/' . self::REPOSITORY . '/git/ref/heads/dev', $agent, 65536
+        ));
+        $object = $data['object'] ?? null;
+        if (
+            ($data['ref'] ?? null) !== 'refs/heads/dev' || !is_array($object)
+            || ($object['type'] ?? null) !== 'commit' || !is_string($object['sha'] ?? null)
+            || !preg_match('~^[a-f0-9]{40}$~D', $object['sha'])
+        ) {
+            throw new CouncilSyncIssue('update', 'development_response');
+        }
+        $commit = $object['sha'];
+        $response = $this->httpGet(
+            'https://raw.githubusercontent.com/' . self::REPOSITORY . '/' . $commit . '/plugins/council_sync/config.json',
+            $agent, 65536
+        );
+        $manifest = self::developmentResponse($response);
+        if (
+            isset($manifest['software_update']['development_branch']) || ($manifest['software_update']['protocol'] ?? null) !== 1
+            || ($manifest['software_update']['development_protocol'] ?? null) !== 1
+        ) {
+            throw new CouncilSyncIssue('update', 'development_response');
+        }
+        try {
+            $version = self::manifestVersion($manifest);
+        } catch (CouncilSyncIssue $error) {
+            throw new CouncilSyncIssue('update', 'development_response');
+        }
+        return [
+            'version' => $version, 'url' => 'https://github.com/' . self::REPOSITORY . '/tree/' . $commit,
+            'commit' => $commit, 'manifest_sha256' => hash('sha256', $response['body']), 'development' => true
+        ];
     }
 
     protected function httpGet(string $url, string $agent, int $limit, array $headers = ['Accept: application/json']): array
@@ -1326,6 +1410,23 @@ class CouncilSync extends CouncilSyncModel
         return ['version' => $match[1], 'url' => $release['html_url']];
     }
 
+    private function cacheForCurrentSource(?object $cache): ?object
+    {
+        if ($cache && $cache->release_url === null && $cache->error_code !== null
+            && str_starts_with($cache->error_code, 'dev:') !== $this->developmentEnabled()) {
+            return null;
+        }
+        if ($cache && $cache->release_url !== null) {
+            $path = $this->developmentEnabled() ? 'tree/[a-f0-9]{40}' : 'releases/tag/v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)';
+            if (!is_string($cache->release_url) || !preg_match(
+                '~^https://github\.com/' . preg_quote(self::REPOSITORY, '~') . '/' . $path . '$~D', $cache->release_url
+            )) {
+                return null;
+            }
+        }
+        return $cache;
+    }
+
     public function versionStatus(int $company): array
     {
         $instances = $this->PluginManager->getByDir('council_sync', $company);
@@ -1334,7 +1435,7 @@ class CouncilSync extends CouncilSyncModel
         }
         $installed = $instances[0]->version;
         $package = self::packageVersion();
-        $cache = $this->Record->select()->from('council_sync_updates')->where('company_id', '=', $company)->fetch();
+        $cache = $this->cacheForCurrentSource($this->Record->select()->from('council_sync_updates')->where('company_id', '=', $company)->fetch() ?: null);
         $latest = $cache ? $cache->latest_version : null;
         $outdated = $latest !== null && (version_compare($package, $latest, '<') || version_compare($installed, $latest, '<'));
         return [
@@ -1344,17 +1445,21 @@ class CouncilSync extends CouncilSyncModel
             'last_success_at' => $cache ? $cache->last_success_at : null,
             'error_code' => $cache ? $cache->error_code : null,
             'status' => !$cache ? 'unchecked' : ($cache->error_code !== null ? 'unavailable' : ($outdated ? 'outdated' : 'current')),
-            'outdated' => $outdated, 'upgrade_required' => $installed !== $package
+            'outdated' => $outdated, 'upgrade_required' => $installed !== $package,
+            'development' => $this->developmentEnabled(),
+            'commit' => $this->developmentEnabled() && $cache && $cache->release_url !== null
+                ? substr($cache->release_url, -40) : null
         ];
     }
 
     public function checkForUpdates(int $company, bool $manual = false): array
     {
         return $this->locked($company, function () use ($company, $manual) {
-            if (!$manual && !$this->settings($company)['updates_enabled']) {
+            if (!$manual && ($this->developmentEnabled() || !$this->settings($company)['updates_enabled'])) {
                 return $this->versionStatus($company);
             }
-            $old = $this->Record->select()->from('council_sync_updates')->where('company_id', '=', $company)->fetch();
+            $stored = $this->Record->select()->from('council_sync_updates')->where('company_id', '=', $company)->fetch();
+            $old = $this->cacheForCurrentSource($stored ?: null);
             $values = [
                 'checked_at' => gmdate('Y-m-d H:i:s', $this->now()),
                 'last_success_at' => $old ? $old->last_success_at : null,
@@ -1362,19 +1467,26 @@ class CouncilSync extends CouncilSyncModel
                 'release_url' => $old ? $old->release_url : null, 'error_code' => null
             ];
             try {
-                $response = $this->updateRequest();
-                if ($response['status'] !== 200) {
-                    throw new CouncilSyncIssue('update', 'release_http', ['status' => $response['status']]);
+                if ($this->developmentEnabled()) {
+                    $release = $this->developmentRelease();
+                } else {
+                    $response = $this->updateRequest();
+                    if ($response['status'] !== 200) {
+                        throw new CouncilSyncIssue('update', 'release_http', ['status' => $response['status']]);
+                    }
+                    $release = self::parseRelease($response['body']);
                 }
-                $release = self::parseRelease($response['body']);
                 $values['latest_version'] = $release['version'];
                 $values['release_url'] = $release['url'];
                 $values['last_success_at'] = $values['checked_at'];
             } catch (CouncilSyncIssue $error) {
                 $values['error_code'] = $error->reason === 'release_http' ? 'http_' . $error->details['status'] : $error->reason;
+                if ($this->developmentEnabled()) {
+                    $values['error_code'] = 'dev:' . $values['error_code'];
+                }
                 error_log('COUNCIL_SYNC_UPDATE_CHECK_FAILED company_id=' . $company . ' reason=' . $values['error_code']);
             }
-            if ($old) {
+            if ($stored) {
                 $this->Record->where('company_id', '=', $company)->update('council_sync_updates', $values);
             } else {
                 $this->Record->insert('council_sync_updates', ['company_id' => $company] + $values);

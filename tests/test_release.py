@@ -182,6 +182,15 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaises(release.ReleaseError):
             release.package(self.root, self.root / "output")
 
+    def test_development_bootstrap_flags_never_enter_release_packages(self):
+        self.fixture()
+        manifest = self.root / release.PLUGIN / "config.json"
+        manifest.write_text(json.dumps({
+            "version": "2.0.0", "software_update": {"development_branch": "dev", "development_protocol": 1}
+        }), encoding="utf-8")
+        with self.assertRaises(release.ReleaseError):
+            release.package(self.root, self.root / "output")
+
     def test_publication_stays_draft_until_the_asset_upload_command_completes(self):
         self.fixture()
         output = self.root / "output"

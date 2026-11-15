@@ -226,6 +226,10 @@ class CouncilSyncPlugin extends Plugin
 
     private function checkVersion(int $company, array $settings): void
     {
+        if ($this->CouncilSync->developmentEnabled()) {
+            error_log('COUNCIL_SYNC_DEV_CHECK_SKIPPED company_id=' . $company);
+            return;
+        }
         $status = $this->CouncilSync->checkForUpdates($company);
         if ($status['status'] === 'unavailable') {
             $details = Language::_('CouncilSyncPlugin.release_unavailable', true, $status['error_code'], CouncilSync::RELEASE_API);

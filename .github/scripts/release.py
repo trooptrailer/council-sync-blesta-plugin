@@ -51,6 +51,9 @@ def manifest_version(content):
         raise ReleaseError("The package manifest is not valid JSON.") from None
     if not isinstance(manifest, dict):
         raise ReleaseError("The package manifest must be an object.")
+    updates = manifest.get("software_update")
+    if isinstance(updates, dict) and "development_branch" in updates:
+        raise ReleaseError("Development-update flags cannot enter a main release package.")
     version = manifest.get("version")
     version_tuple(version)
     return version

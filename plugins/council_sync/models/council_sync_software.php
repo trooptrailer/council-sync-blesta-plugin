@@ -332,10 +332,13 @@ class CouncilSyncSoftware extends CouncilSyncModel
             throw new CouncilSyncIssue('software', 'software_protocol');
         }
         if (
-            !is_array($config) || !is_string($config['version'] ?? null)
-            || !preg_match('~^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$~D', $config['version'])
-            || ($config['software_update']['protocol'] ?? null) !== 1
+            !is_array($config) || ($config['software_update']['protocol'] ?? null) !== 1
         ) {
+            throw new CouncilSyncIssue('software', 'software_protocol');
+        }
+        try {
+            CouncilSync::manifestVersion($config);
+        } catch (CouncilSyncIssue $error) {
             throw new CouncilSyncIssue('software', 'software_protocol');
         }
         $config['software_update']['data_tables'] = CouncilSyncSoftwareSnapshot::dataTables(
@@ -534,7 +537,15 @@ class CouncilSyncSoftware extends CouncilSyncModel
     protected function download(array $release, string $path): void
     {
         $asset = $release['asset'] ?? null;
-        if (
+        $development = ($release['development'] ?? false) === true;
+        if ($development) {
+            if (
+                (self::package($this->pluginDirectory())['software_update']['development_branch'] ?? null) !== 'dev'
+                || !is_string($release['commit'] ?? null) || !preg_match('~^[a-f0-9]{40}$~D', $release['commit'])
+            ) {
+                throw new CouncilSyncIssue('software', 'software_development');
+            }
+        } elseif (
             !is_array($asset) || !is_int($asset['id'] ?? null) || $asset['id'] < 1
             || !is_int($asset['size'] ?? null) || $asset['size'] < 1 || $asset['size'] > 16777216
             || !is_string($asset['sha256'] ?? null) || !preg_match('~^[a-f0-9]{64}$~D', $asset['sha256'])
@@ -551,9 +562,11 @@ class CouncilSyncSoftware extends CouncilSyncModel
         }
         try {
             $response = $this->downloadRequest(
-                'https://api.github.com/repos/' . CouncilSync::REPOSITORY . '/releases/assets/' . $asset['id'], $stream
+                $development ? 'https://codeload.github.com/' . CouncilSync::REPOSITORY . '/zip/' . $release['commit']
+                    : 'https://api.github.com/repos/' . CouncilSync::REPOSITORY . '/releases/assets/' . $asset['id'],
+                $stream
             );
-            if ($response['status'] === 302) {
+            if (!$development && $response['status'] === 302) {
                 if (!is_string($response['location'] ?? null)) {
                     throw new CouncilSyncIssue('software', 'software_download');
                 }
@@ -563,7 +576,10 @@ class CouncilSyncSoftware extends CouncilSyncModel
                 throw new CouncilSyncIssue('software', 'software_download');
             }
             $stat = fstat($stream);
-            if (!is_array($stat) || $stat['size'] !== $asset['size'] || hash_file('sha256', $path) !== $asset['sha256']) {
+            if (
+                !is_array($stat) || $stat['size'] < 1
+                || (!$development && ($stat['size'] !== $asset['size'] || hash_file('sha256', $path) !== $asset['sha256']))
+            ) {
                 throw new CouncilSyncIssue('software', 'software_download');
             }
         } finally {
@@ -588,8 +604,15 @@ class CouncilSyncSoftware extends CouncilSyncModel
             && ($directory || in_array(strtolower(pathinfo($path, PATHINFO_EXTENSION)), ['php', 'pdt'], true));
     }
 
-    public static function extract(string $archive, string $directory): array
+    public static function extract(string $archive, string $directory, ?array $development = null): array
     {
+        if ($development !== null && (
+            !is_string($development['commit'] ?? null) || !preg_match('~^[a-f0-9]{40}$~D', $development['commit'])
+            || !is_string($development['manifest_sha256'] ?? null)
+            || !preg_match('~^[a-f0-9]{64}$~D', $development['manifest_sha256'])
+        )) {
+            throw new CouncilSyncIssue('software', 'software_development');
+        }
         if (!class_exists('ZipArchive')) {
             throw new CouncilSyncIssue('software', 'software_zip');
         }
@@ -611,8 +634,20 @@ class CouncilSyncSoftware extends CouncilSyncModel
                 }
                 $parts = explode('/', $entry['name']);
                 $top = array_shift($parts);
-                if ($top !== 'council_sync') {
+                $expected = $development === null ? 'council_sync'
+                    : substr(CouncilSync::REPOSITORY, strpos(CouncilSync::REPOSITORY, '/') + 1) . '-' . $development['commit'];
+                if ($top !== $expected) {
                     throw new CouncilSyncIssue('software', 'software_archive');
+                }
+                $sourceReadme = false;
+                if ($development !== null) {
+                    if (($parts[0] ?? null) === 'plugins' && ($parts[1] ?? null) === 'council_sync') {
+                        $parts = array_slice($parts, 2);
+                    } elseif (count($parts) === 1 && in_array($parts[0], ['README.md', 'LICENSE', 'CHANGELOG.md'], true)) {
+                        $sourceReadme = $parts[0] === 'README.md';
+                    } else {
+                        continue;
+                    }
                 }
                 $relative = implode('/', $parts);
                 $directoryEntry = str_ends_with($entry['name'], '/');
@@ -672,6 +707,17 @@ class CouncilSyncSoftware extends CouncilSyncModel
                 if (strlen($content) !== $entry['size']) {
                     throw new CouncilSyncIssue('software', 'software_archive');
                 }
+                if ($sourceReadme) {
+                    $content = str_replace(['(./plugins/council_sync/config.json)', '(./plugins/council_sync)'], ['(./config.json)', '(.)'], $content);
+                    foreach (['.github/workflows/ci.yml', '.github/scripts/release.py', '.pre-commit-config.yaml', '.gitleaks.toml'] as $link) {
+                        $content = str_replace('(./' . $link . ')', '(https://github.com/' . CouncilSync::REPOSITORY
+                            . '/blob/' . $development['commit'] . '/' . $link . ')', $content);
+                    }
+                    $bytes += strlen($content) - $entry['size'];
+                    if (strlen($content) > 8388608 || $bytes > 67108864) {
+                        throw new CouncilSyncIssue('software', 'software_archive');
+                    }
+                }
                 if (in_array(strtolower(pathinfo($relative, PATHINFO_EXTENSION)), ['php', 'pdt'], true)) {
                     try {
                         token_get_all($content, TOKEN_PARSE);
@@ -687,7 +733,17 @@ class CouncilSyncSoftware extends CouncilSyncModel
         } finally {
             $zip->close();
         }
-        return self::package($directory);
+        $package = self::package($directory);
+        if ($development !== null && (
+            hash_file('sha256', $directory . DIRECTORY_SEPARATOR . 'config.json') !== $development['manifest_sha256']
+            || ($package['software_update']['development_protocol'] ?? null) !== 1
+        )) {
+            throw new CouncilSyncIssue('software', 'software_development');
+        }
+        if ($development !== null && isset($package['software_update']['development_branch'])) {
+            throw new CouncilSyncIssue('software', 'software_development');
+        }
+        return $package;
     }
 
     private function instances(): array
@@ -731,11 +787,11 @@ class CouncilSyncSoftware extends CouncilSyncModel
         throw new CouncilSyncIssue('software', 'software_failed');
     }
 
-    public function install(int $staff, int $company, string $expectedVersion): void
+    public function install(int $staff, int $company, string $expectedVersion, ?string $expectedCommit = null): void
     {
         $this->requireAuthorized($staff, $company);
         $this->checkPlatform();
-        self::guard($this->Record, function () use ($staff, $expectedVersion) {
+        self::guard($this->Record, function () use ($staff, $expectedVersion, $expectedCommit) {
             self::assertIdle($this->Record);
             $config = $this->configuration();
             $root = $this->privateRoot((string) $config['backup_dir']);
@@ -751,7 +807,14 @@ class CouncilSyncSoftware extends CouncilSyncModel
                 throw new CouncilSyncIssue('software', 'software_version');
             }
             $release = $this->CouncilSync->softwareRelease();
+            $development = ($before['software_update']['development_branch'] ?? null) === 'dev';
+            if ((($release['development'] ?? false) === true) !== $development) {
+                throw new CouncilSyncIssue('software', 'software_development');
+            }
             if ($release['version'] !== $expectedVersion || !version_compare($release['version'], $before['version'], '>')) {
+                throw new CouncilSyncIssue('software', 'software_version');
+            }
+            if ($development && ($expectedCommit === null || $expectedCommit !== $release['commit'])) {
                 throw new CouncilSyncIssue('software', 'software_version');
             }
             $files = self::inventory($this->pluginDirectory());
@@ -766,6 +829,9 @@ class CouncilSyncSoftware extends CouncilSyncModel
                 'before_files' => $files, 'before_modes' => self::modes($this->pluginDirectory()),
                 'files_swapped' => false, 'temp_tables' => []
             ];
+            if ($development) {
+                $state['development_commit'] = $release['commit'];
+            }
             try {
                 $this->saveState($state);
                 self::copyTree($this->pluginDirectory(), $directory . DIRECTORY_SEPARATOR . 'before', $files, $state['before_modes']);
@@ -773,7 +839,13 @@ class CouncilSyncSoftware extends CouncilSyncModel
                 $this->snapshotStore()->verify($state['snapshot'], $directory);
                 $this->saveState($state);
                 $this->download($release, $directory . DIRECTORY_SEPARATOR . 'release.zip');
-                $package = self::extract($directory . DIRECTORY_SEPARATOR . 'release.zip', $directory . DIRECTORY_SEPARATOR . 'staged');
+                $package = self::extract(
+                    $directory . DIRECTORY_SEPARATOR . 'release.zip', $directory . DIRECTORY_SEPARATOR . 'staged',
+                    $development ? $release : null
+                );
+                if (isset($package['software_update']['development_branch'])) {
+                    throw new CouncilSyncIssue('software', 'software_development');
+                }
                 if ($package['version'] !== $state['to']) {
                     throw new CouncilSyncIssue('software', 'software_version');
                 }
